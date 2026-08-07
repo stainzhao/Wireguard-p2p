@@ -161,8 +161,8 @@ class AgentTests(unittest.TestCase):
         self.assertIn("monitor failed", output.getvalue())
 
     def test_repeated_probe_failures_enter_long_cooldown(self):
-        self.assertEqual(agent.retry_delay(1), 60)
-        self.assertEqual(agent.retry_delay(2), 120)
+        self.assertEqual(agent.retry_delay(1), 3)
+        self.assertEqual(agent.retry_delay(2), 10)
         self.assertEqual(agent.retry_delay(3), 1800)
         self.assertEqual(agent.retry_delay(20), 1800)
 
