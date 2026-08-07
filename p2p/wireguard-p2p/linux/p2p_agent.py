@@ -17,23 +17,25 @@ import sys
 import threading
 import time
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+from candidates import gather_candidates
 
-VERSION = "6.2.0"
+VERSION = "7.0.0-alpha.1"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
 VPS_ADDRESS = "10.0.0.1"
 STATE_FILE = os.environ.get("P2P_STATE_FILE", "/var/lib/wireguard-p2p/state.json")
 LOCK_FILE = os.environ.get("P2P_LOCK_FILE", "/run/wireguard-p2p/agent.lock")
-NOTIFY_KEY_FILE = os.environ.get(
-    "P2P_NOTIFY_KEY_FILE", "/etc/wireguard-p2p/notify.key"
-)
+NOTIFY_KEY_FILE = os.environ.get("P2P_NOTIFY_KEY_FILE", "/etc/wireguard-p2p/notify.key")
 KEEPALIVE = 25
 DIRECT_MAX_AGE = 180
 PROBE_TIMEOUT = 90
 RETRY_DELAYS = (60, 120)
 FAILURE_COOLDOWN = 1800
-MAX_REQUEST_SIZE = 4096
+MAX_REQUEST_SIZE = 16384
 VERBOSE_LOG = os.environ.get("P2P_VERBOSE_LOG", "0") == "1"
 
 STATES = {}
@@ -49,11 +51,7 @@ def log(message):
 
 
 def log_error(message):
-    print(
-        "[{}] {}".format(time.strftime("%m-%d %H:%M:%S"), message),
-        file=sys.stderr,
-        flush=True,
-    )
+    print("[{}] {}".format(time.strftime("%m-%d %H:%M:%S"), message), file=sys.stderr, flush=True)
 
 
 def load_notify_key():
@@ -68,14 +66,8 @@ NOTIFY_KEY = None
 
 
 def run(command, timeout=10):
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        universal_newlines=True,
-        timeout=timeout,
-        check=False,
-    )
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True, timeout=timeout, check=False)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "command failed: {}".format(command[0]))
     return result.stdout.strip()
@@ -170,15 +162,61 @@ def validate_peer_ip(value):
 def validate_endpoint(value):
     if not isinstance(value, str) or ":" not in value:
         raise ValueError("invalid endpoint")
-    host, port_text = value.rsplit(":", 1)
-    host = host.strip("[]")
+    if value.startswith("["):
+        closing = value.find("]")
+        if closing <= 1 or closing + 1 >= len(value) or value[closing + 1] != ":":
+            raise ValueError("invalid IPv6 endpoint")
+        host = value[1:closing]
+        port_text = value[closing + 2:]
+    else:
+        host, port_text = value.rsplit(":", 1)
+        if ":" in host:
+            raise ValueError("IPv6 endpoint must use brackets")
     address = ipaddress.ip_address(host)
     port = int(port_text)
     if not 1 <= port <= 65535:
         raise ValueError("invalid endpoint port")
     if address.is_unspecified or address.is_multicast:
         raise ValueError("invalid endpoint address")
-    return value
+    if address.version == 6:
+        return "[{}]:{}".format(address.compressed, port)
+    return "{}:{}".format(address.compressed, port)
+
+
+def validate_candidates(values):
+    if values is None:
+        return []
+    if not isinstance(values, list) or len(values) > 16:
+        raise ValueError("invalid candidates")
+    allowed_types = {"lan4", "host6", "mapped4", "observed4", "predicted4"}
+    result = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, dict):
+            raise ValueError("invalid candidate")
+        candidate_type = value.get("type", "")
+        if candidate_type not in allowed_types:
+            raise ValueError("invalid candidate type")
+        endpoint = validate_endpoint(value.get("endpoint", ""))
+        address = ipaddress.ip_address(endpoint[1:endpoint.index("]")] if endpoint.startswith("[") else endpoint.rsplit(":", 1)[0])
+        family = "udp6" if address.version == 6 else "udp4"
+        if value.get("family") not in (None, "", family):
+            raise ValueError("candidate family mismatch")
+        priority = int(value.get("priority", 0))
+        if not 0 <= priority <= 2000:
+            raise ValueError("invalid candidate priority")
+        key = (candidate_type, endpoint)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({
+            "type": candidate_type,
+            "family": family,
+            "endpoint": endpoint,
+            "priority": priority,
+            "verified": bool(value.get("verified", False)),
+        })
+    return sorted(result, key=lambda item: item["priority"], reverse=True)
 
 
 def retry_delay(failures):
@@ -199,8 +237,15 @@ def handle_offer(data):
     now = time.time()
     key = validate_public_key(data["peer_key"])
     peer_ip = validate_peer_ip(data["peer_ip"])
-    endpoint = validate_endpoint(data["endpoint"])
-    endpoint_type = data.get("endpoint_type", "WAN")
+    candidates = validate_candidates(data.get("candidates", []))
+    if data.get("endpoint"):
+        endpoint = validate_endpoint(data["endpoint"])
+        endpoint_type = data.get("endpoint_type", "WAN")
+    elif candidates:
+        endpoint = candidates[0]["endpoint"]
+        endpoint_type = candidates[0]["type"]
+    else:
+        raise ValueError("peer endpoint unavailable")
     requested_expiry = float(data.get("lease_expires", now + 120))
     lease_expires = min(max(requested_expiry, now + 30), now + 180)
 
@@ -214,6 +259,7 @@ def handle_offer(data):
                 "mode": "idle",
                 "endpoint": endpoint,
                 "endpoint_type": endpoint_type,
+                "candidates": candidates,
                 "started": 0,
                 "failures": 0,
                 "retry_after": 0,
@@ -221,17 +267,13 @@ def handle_offer(data):
             STATES[key] = state
         state["ip"] = peer_ip
         state["endpoint_type"] = endpoint_type
+        state["candidates"] = candidates
         state["lease_expires"] = lease_expires
 
         if changed_endpoint:
             if key in current:
                 wg_set("peer", key, "remove")
-            state.update({
-                "endpoint": endpoint,
-                "mode": "idle",
-                "failures": 0,
-                "retry_after": 0,
-            })
+            state.update({"endpoint": endpoint, "mode": "idle", "failures": 0, "retry_after": 0})
             start_probe(key, state, now)
             log("offer {} via {} {}; probing".format(peer_ip, endpoint_type, endpoint))
         elif key not in current and now >= state.get("retry_after", 0):
@@ -239,13 +281,17 @@ def handle_offer(data):
             log("restored probe {} via {}".format(peer_ip, endpoint))
         save_state()
 
+    lan_ip = local_ipv4()
+    wg_port = listen_port()
     return {
         "ok": True,
         "version": VERSION,
+        "protocol": 7,
         "key": public_key(),
         "ip": LISTEN_ADDRESS,
-        "lan_ip": local_ipv4(),
-        "listen_port": listen_port(),
+        "lan_ip": lan_ip,
+        "listen_port": wg_port,
+        "candidates": gather_candidates(wg_port, lan_ip),
     }
 
 
@@ -308,24 +354,14 @@ def monitor_once():
                     wg_set("peer", key, "allowed-ips", peer_ip + "/32",
                            "endpoint", state["endpoint"],
                            "persistent-keepalive", str(KEEPALIVE))
-                    state.update({
-                        "mode": "direct",
-                        "promoted": now,
-                        "failures": 0,
-                        "retry_after": 0,
-                    })
-                    log("P2P OK {} via {} {}".format(
-                        peer_ip, state.get("endpoint_type", "WAN"), state["endpoint"]))
+                    state.update({"mode": "direct", "promoted": now, "failures": 0, "retry_after": 0})
+                    log("P2P OK {} via {} {}".format(peer_ip, state.get("endpoint_type", "WAN"), state["endpoint"]))
                     changed = True
                 elif now - state.get("started", now) >= PROBE_TIMEOUT:
                     wg_set("peer", key, "remove")
                     failures = int(state.get("failures", 0)) + 1
                     delay = retry_delay(failures)
-                    state.update({
-                        "mode": "idle",
-                        "failures": failures,
-                        "retry_after": now + delay,
-                    })
+                    state.update({"mode": "idle", "failures": failures, "retry_after": now + delay})
                     log("probe timeout {}; retry in {}s".format(peer_ip, delay))
                     changed = True
                 continue
@@ -395,9 +431,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         timestamp = int(timestamp_text)
         if abs(time.time() - timestamp) > 30:
             raise PermissionError("expired notification")
-        expected = hmac.new(
-            NOTIFY_KEY, timestamp_text.encode() + b"\n" + body, hashlib.sha256
-        ).hexdigest()
+        expected = hmac.new(NOTIFY_KEY, timestamp_text.encode() + b"\n" + body, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature, expected):
             raise PermissionError("invalid notification signature")
         return json.loads(body.decode())
@@ -411,11 +445,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         with STATE_LOCK:
             state_count = len(STATES)
-        self.send_json(200, {
-            "ok": True,
-            "version": VERSION,
-            "state_count": state_count,
-        })
+        self.send_json(200, {"ok": True, "version": VERSION, "state_count": state_count})
 
     def do_POST(self):
         if self.path not in ("/offer", "/remove"):
@@ -423,10 +453,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         try:
             data = self.read_signed_json()
-            if self.path == "/offer":
-                result = handle_offer(data)
-            else:
-                result = handle_remove(data)
+            result = handle_offer(data) if self.path == "/offer" else handle_remove(data)
             self.send_json(200, result)
         except PermissionError as exc:
             self.send_json(403, {"error": str(exc)})
