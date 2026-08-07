@@ -16,7 +16,7 @@ PRIORITY = {
 }
 MAX_PROBE_CANDIDATES = 5
 PORTMAP_STATE_FILE = os.environ.get(
-    "P2P_PORTMAP_STATE_FILE", "/run/wireguard-p2p/mapped4.json"
+    "P2P_PORTMAP_STATE_FILE", "/var/lib/wireguard-p2p/mapped4.json"
 )
 
 
