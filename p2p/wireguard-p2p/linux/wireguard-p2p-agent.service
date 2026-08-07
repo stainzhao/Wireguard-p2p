@@ -14,7 +14,15 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=10
 RuntimeDirectory=wireguard-p2p
+RuntimeDirectoryMode=0700
 UMask=0077
+
+# Quiet-by-default runtime: normal stdout never reaches persistent journal.
+# Errors remain available for diagnosis, with burst protection if a fault loops.
+StandardOutput=null
+StandardError=journal
+LogRateLimitIntervalSec=5min
+LogRateLimitBurst=20
 
 AmbientCapabilities=CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_ADMIN
