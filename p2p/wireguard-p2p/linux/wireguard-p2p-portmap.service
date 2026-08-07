@@ -1,0 +1,35 @@
+[Unit]
+Description=WireGuard P2P automatic IPv4 port mapping
+Wants=network-online.target
+After=network-online.target wireguard-p2p-agent.service
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_USER__
+Environment=P2P_INTERFACE=wg0
+ExecStart=/usr/bin/python3 /opt/wireguard-p2p/portmap_daemon.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+StateDirectory=wireguard-p2p
+UMask=0077
+
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
