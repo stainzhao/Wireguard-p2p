@@ -384,7 +384,7 @@ def offer_fingerprint(client, client_lan_endpoint, client_candidates, server, se
     ])
 
 
-def push_offer(server, client, client_lan_endpoint, client_candidates, session_id):
+def push_offer(server, client, client_lan_endpoint, client_candidates, session_id, session_started_ns):
     same_nat = endpoint_ip(server.get("endpoint", "")) == endpoint_ip(
         client.get("endpoint", "")
     )
@@ -407,6 +407,7 @@ def push_offer(server, client, client_lan_endpoint, client_candidates, session_i
     return signed_post(server["ip"], "/offer", {
         "protocol": 7,
         "session_id": session_id,
+        "session_started_ns": session_started_ns,
         "peer_key": client["key"],
         "peer_ip": client["ip"],
         "endpoint": candidate,
@@ -486,6 +487,7 @@ def coordinate_client(client, client_lan_endpoint, peers, client_candidates=None
                         client_lan_endpoint,
                         client_candidates,
                         session_id,
+                        session_started_ns,
                     ): (server, fingerprint)
                     for server, fingerprint in pending
                 }
