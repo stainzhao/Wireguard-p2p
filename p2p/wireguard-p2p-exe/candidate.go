@@ -153,9 +153,12 @@ func normalizeCandidate(candidate Candidate) (Candidate, bool) {
 	return candidate, true
 }
 
-func buildProbeCandidates(advertised []Candidate, publicEndpoint, lanEndpoint string, sameNAT bool) []Candidate {
+func buildProbeCandidates(advertised []Candidate, publicEndpoint, lanEndpoint string, sameNAT, allowIPv6 bool) []Candidate {
 	all := make([]Candidate, 0, len(advertised)+2)
 	for _, candidate := range advertised {
+		if candidate.Type == "host6" && !allowIPv6 {
+			continue
+		}
 		if candidate.Type == "lan4" && !sameNAT {
 			continue
 		}
