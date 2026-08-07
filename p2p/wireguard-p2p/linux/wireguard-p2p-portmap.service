@@ -13,7 +13,15 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=10
 RuntimeDirectory=wireguard-p2p
+RuntimeDirectoryMode=0700
 UMask=0077
+
+# Port mapping is silent in steady state. Keep only stderr diagnostics and
+# prevent a repeating router/tool failure from growing the persistent journal.
+StandardOutput=null
+StandardError=journal
+LogRateLimitIntervalSec=5min
+LogRateLimitBurst=20
 
 AmbientCapabilities=CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_ADMIN
