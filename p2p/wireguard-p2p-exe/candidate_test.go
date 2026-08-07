@@ -11,6 +11,10 @@ func TestUsableGlobalIPv6(t *testing.T) {
 		want    bool
 	}{
 		{"2001:4860:4860::8888", true},
+		{"2001:da8:216:191a::1", true},
+		{"2001:3::1", false},
+		{"2001:db8::1", false},
+		{"2002:c000:0204::1", false},
 		{"fe80::1", false},
 		{"fd00::1", false},
 		{"::1", false},
@@ -20,6 +24,18 @@ func TestUsableGlobalIPv6(t *testing.T) {
 		if got := isUsableGlobalIPv6(net.ParseIP(test.address)); got != test.want {
 			t.Fatalf("isUsableGlobalIPv6(%s)=%v want %v", test.address, got, test.want)
 		}
+	}
+}
+
+func TestObservedEndpointClassification(t *testing.T) {
+	if got := observedTypeForEndpoint("[2001:da8:216:191a::1234]:48132"); got != "observed6" {
+		t.Fatalf("IPv6 learned endpoint type=%q want observed6", got)
+	}
+	if got := observedTypeForEndpoint("[2001:3::1234]:48132"); got != "" {
+		t.Fatalf("AMT/special IPv6 must not be learned as observed6: %q", got)
+	}
+	if got := observedTypeForEndpoint("8.8.8.8:48132"); got != "observed4" {
+		t.Fatalf("IPv4 learned endpoint type=%q want observed4", got)
 	}
 }
 
@@ -49,6 +65,16 @@ func TestBuildProbeCandidatesFiltersRemoteLAN(t *testing.T) {
 	}
 	if candidateTypeForEndpoint(got, "8.8.8.8:40000") != "observed4" {
 		t.Fatal("observed4 fallback missing")
+	}
+}
+
+func TestBuildProbeCandidatesRejectsSpecialUseHost6(t *testing.T) {
+	advertised := []Candidate{
+		{Type: "host6", Family: "udp6", Endpoint: "[2001:3::1234]:33967", Priority: 900},
+	}
+	got := buildProbeCandidates(advertised, "8.8.8.8:40000", "", false, true)
+	if candidateTypeForEndpoint(got, "[2001:3::1234]:33967") != "" {
+		t.Fatal("2001:3::/32 must never be used as a native host6 candidate")
 	}
 }
 
