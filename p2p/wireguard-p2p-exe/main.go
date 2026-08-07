@@ -19,12 +19,11 @@ import (
 )
 
 const (
-	version          = "7.0.0-alpha.1"
+	version          = "7.0.0-beta.1"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
 	directMaxAge     = 3 * time.Minute
-	probeTimeout     = 90 * time.Second
 	failureCooldown  = 30 * time.Minute
 	activeInterval   = 15 * time.Second
 	inactiveInterval = 3 * time.Second
@@ -32,10 +31,13 @@ const (
 	errorLogInterval = 5 * time.Minute
 )
 
-var serverKeys = map[string]string{
-	"YmAf+TDF3vM4QyOjPLbYu51owmIpqJt7osYugYtyhSg=": "10.0.0.5", // 2696
-	"XTMmfyf2EWH7prfVCSkcWDOB5Lth5+F+OU8KsgtJhQQ=": "10.0.0.2", // GPU
-}
+var (
+	errDeviceNotRegistered = errors.New("this device is not registered/online on the VPS")
+	serverKeys = map[string]string{
+		"YmAf+TDF3vM4QyOjPLbYu51owmIpqJt7osYugYtyhSg=": "10.0.0.5", // 2696
+		"XTMmfyf2EWH7prfVCSkcWDOB5Lth5+F+OU8KsgtJhQQ=": "10.0.0.2", // GPU
+	}
+)
 
 type apiPeer struct {
 	Key             string      `json:"key"`
@@ -58,11 +60,17 @@ type localPeer struct {
 }
 
 type peerState struct {
-	Mode       string
-	Endpoint   string
-	Started    int64
-	Failures   int
-	RetryAfter int64
+	Mode               string
+	Endpoint           string
+	SelectedType       string
+	Candidates         []Candidate
+	CandidateSignature string
+	Started            int64
+	BaselineHandshake  int64
+	Failures           int
+	RetryAfter         int64
+	Generation         int64
+	WorkerRunning      bool
 }
 
 type app struct {
@@ -76,6 +84,7 @@ type app struct {
 	failureDelay       time.Duration
 	nextSyncAttempt    time.Time
 	mu                 sync.Mutex
+	wgMu               sync.Mutex
 }
 
 func main() {
@@ -115,7 +124,7 @@ func main() {
 	defer close(cleanupDone)
 
 	fmt.Printf("WireGuard P2P %s is running. Close this window or press Ctrl+C to stop.\n", version)
-	fmt.Println("Dynamic peers are removed on exit, so traffic falls back to the VPS.")
+	fmt.Println("VPS relay remains available while direct candidates are tested in the background.")
 
 	var next time.Duration
 	for {
@@ -134,7 +143,9 @@ func main() {
 			if a.interfaceName != "" {
 				a.log("WireGuard tunnel is inactive; waiting locally.")
 				a.interfaceName = ""
+				a.mu.Lock()
 				a.states = make(map[string]*peerState)
+				a.mu.Unlock()
 			}
 			next = inactiveInterval
 			continue
@@ -143,7 +154,9 @@ func main() {
 			a.interfaceName = iface
 			a.log("Using WireGuard interface: " + iface)
 			a.cleanup()
+			a.mu.Lock()
 			a.states = make(map[string]*peerState)
+			a.mu.Unlock()
 		}
 
 		if time.Now().Before(a.nextSyncAttempt) {
@@ -208,6 +221,8 @@ func (a *app) reportSyncRecovered() {
 }
 
 func (a *app) wg(args ...string) (string, error) {
+	a.wgMu.Lock()
+	defer a.wgMu.Unlock()
 	cmd := exec.Command(a.wgPath, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -245,15 +260,17 @@ func (a *app) cleanup() {
 	if a.interfaceName == "" {
 		return
 	}
+	for key, state := range a.states {
+		state.Generation++
+		state.WorkerRunning = false
+		_, _ = a.wg("set", a.interfaceName, "peer", key, "remove")
+	}
 	for key := range serverKeys {
 		_, _ = a.wg("set", a.interfaceName, "peer", key, "remove")
 	}
 }
 
 func (a *app) syncOnce() error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	ownKey, err := a.wg("show", a.interfaceName, "public-key")
 	if err != nil {
 		return err
@@ -275,135 +292,7 @@ func (a *app) syncOnce() error {
 	if err != nil {
 		return err
 	}
-	var ours *apiPeer
-	for i := range peers {
-		if peers[i].Key == ownKey {
-			ours = &peers[i]
-			break
-		}
-	}
-	if ours == nil || ours.Endpoint == "" {
-		return errors.New("this device is not registered/online on the VPS")
-	}
-	ourNAT := endpointIP(ours.Endpoint)
-	locals, err := a.localPeers()
-	if err != nil {
-		return err
-	}
-	now := time.Now().Unix()
-	active := make(map[string]bool)
-
-	for _, peer := range peers {
-		serverIP, isServer := serverKeys[peer.Key]
-		if !isServer || peer.Endpoint == "" || peer.LatestHandshake == 0 {
-			continue
-		}
-		if time.Duration(now-peer.LatestHandshake)*time.Second > onlineMaxAge {
-			continue
-		}
-		candidate, kind := peer.Endpoint, "WAN"
-		if endpointIP(peer.Endpoint) == ourNAT {
-			candidate, kind = peer.LanEndpoint, "LAN"
-		}
-		if candidate == "" {
-			continue
-		}
-		active[peer.Key] = true
-		state := a.states[peer.Key]
-		if state == nil {
-			state = &peerState{Mode: "idle", Endpoint: candidate}
-			a.states[peer.Key] = state
-		}
-		local, exists := locals[peer.Key]
-		if state.Endpoint != candidate {
-			if exists {
-				_, _ = a.wg("set", a.interfaceName, "peer", peer.Key, "remove")
-				exists = false
-			}
-			state.Mode = "idle"
-			state.Endpoint = candidate
-			state.Started = 0
-			state.Failures = 0
-			state.RetryAfter = 0
-			a.log("Endpoint changed for " + serverIP + "; retrying now.")
-		}
-
-		if exists && contains(local.AllowedIPs, serverIP+"/32") {
-			state.Mode = "direct"
-			if local.LatestHandshake > 0 && now-local.LatestHandshake <= int64(directMaxAge/time.Second) {
-				if local.Endpoint != candidate {
-					_, err = a.wg("set", a.interfaceName, "peer", peer.Key, "endpoint", candidate, "persistent-keepalive", strconv.Itoa(keepalive))
-					if err != nil {
-						return err
-					}
-					state.Endpoint = candidate
-				}
-				continue
-			}
-			_, _ = a.wg("set", a.interfaceName, "peer", peer.Key, "remove")
-			exists = false
-			state.Mode = "idle"
-			state.Started = 0
-			state.Failures = 0
-			state.RetryAfter = 0
-			a.log("Fallback " + serverIP + " to VPS; continuing probe.")
-		}
-
-		if exists && state.Mode == "probe" {
-			if local.Endpoint != candidate {
-				_, err = a.wg("set", a.interfaceName, "peer", peer.Key, "endpoint", candidate, "persistent-keepalive", strconv.Itoa(keepalive))
-				if err != nil {
-					return err
-				}
-				state.Endpoint, state.Started = candidate, now
-			}
-			if local.LatestHandshake > 0 && local.LatestHandshake >= state.Started-2 {
-				_, err = a.wg("set", a.interfaceName, "peer", peer.Key, "allowed-ips", serverIP+"/32", "endpoint", candidate, "persistent-keepalive", strconv.Itoa(keepalive))
-				if err != nil {
-					return err
-				}
-				state.Mode = "direct"
-				state.Failures = 0
-				state.RetryAfter = 0
-				a.log("P2P OK " + serverIP + " via " + kind + " " + candidate)
-				continue
-			}
-			if now-state.Started >= int64(probeTimeout/time.Second) {
-				_, _ = a.wg("set", a.interfaceName, "peer", peer.Key, "remove")
-				exists = false
-				delay := recordProbeFailure(state, now)
-				a.log("Probe timeout " + serverIP + "; retry in " + delay.String() + ".")
-			}
-			continue
-		}
-
-		if exists {
-			_, _ = a.wg("set", a.interfaceName, "peer", peer.Key, "remove")
-			exists = false
-		}
-		if state.Mode == "idle" && now < state.RetryAfter {
-			continue
-		}
-
-		_, err = a.wg("set", a.interfaceName, "peer", peer.Key, "endpoint", candidate, "persistent-keepalive", strconv.Itoa(keepalive))
-		if err != nil {
-			return err
-		}
-		state.Mode, state.Endpoint, state.Started = "probe", candidate, now
-		state.RetryAfter = 0
-		a.log("Probe " + serverIP + " via " + kind + " " + candidate)
-	}
-
-	for key := range serverKeys {
-		if active[key] {
-			continue
-		}
-		if _, exists := locals[key]; exists {
-			_, _ = a.wg("set", a.interfaceName, "peer", key, "remove")
-		}
-		delete(a.states, key)
-	}
-	return nil
+	return a.reconcilePeers(peers, ownKey)
 }
 
 func (a *app) fallbackStaleDirects() {
@@ -426,7 +315,14 @@ func (a *app) fallbackStaleDirects() {
 			continue
 		}
 		_, _ = a.wg("set", a.interfaceName, "peer", key, "remove")
-		delete(a.states, key)
+		if state := a.states[key]; state != nil {
+			state.Generation++
+			state.WorkerRunning = false
+			state.Mode = "idle"
+			state.Endpoint = ""
+			state.SelectedType = ""
+			state.RetryAfter = 0
+		}
 		a.log("Fallback " + serverIP + " to VPS during coordinator outage.")
 	}
 }
@@ -543,11 +439,7 @@ func endpointIP(endpoint string) string {
 	if host, _, err := net.SplitHostPort(endpoint); err == nil {
 		return strings.Trim(host, "[]")
 	}
-	index := strings.LastIndex(endpoint, ":")
-	if index <= 0 {
-		return ""
-	}
-	return strings.Trim(endpoint[:index], "[]")
+	return ""
 }
 
 func localIPv4() string {
@@ -591,6 +483,7 @@ func recordProbeFailure(state *peerState, now int64) time.Duration {
 	delay := retryDelay(state.Failures)
 	state.Mode = "idle"
 	state.Started = 0
+	state.BaselineHandshake = 0
 	state.RetryAfter = now + int64(delay/time.Second)
 	return delay
 }
