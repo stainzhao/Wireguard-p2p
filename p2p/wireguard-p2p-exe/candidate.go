@@ -10,6 +10,7 @@ import (
 const (
 	candidatePriorityLAN4      = 1000
 	candidatePriorityHost6     = 900
+	candidatePriorityObserved6 = 850
 	candidatePriorityMapped4   = 800
 	candidatePriorityObserved4 = 600
 	candidatePriorityPredict4  = 400
@@ -22,6 +23,21 @@ type Candidate struct {
 	Endpoint string `json:"endpoint"`
 	Priority int    `json:"priority"`
 	Verified bool   `json:"verified,omitempty"`
+}
+
+var nonHostIPv6CIDRs = []string{
+	"64:ff9b::/96",   // IPv4/IPv6 translation WKP
+	"64:ff9b:1::/48", // local-use IPv4/IPv6 translation prefix
+	"100::/64",       // discard-only
+	"2001::/32",      // Teredo
+	"2001:2::/48",    // benchmarking
+	"2001:3::/32",    // AMT (also used by the current campus router LAN)
+	"2001:4:112::/48", // AS112-v6
+	"2001:10::/28",   // ORCHID (deprecated)
+	"2001:20::/28",   // ORCHIDv2
+	"2001:db8::/32",  // documentation
+	"2002::/16",      // 6to4
+	"3fff::/20",      // documentation
 }
 
 func gatherLocalCandidates(listenPort int, lanIP string) []Candidate {
@@ -84,12 +100,16 @@ func globalIPv6Addresses() []net.IP {
 }
 
 func isUsableGlobalIPv6(ip net.IP) bool {
-	return ip != nil &&
-		ip.To4() == nil &&
-		ip.IsGlobalUnicast() &&
-		!ip.IsPrivate() &&
-		!ip.IsLoopback() &&
-		!ip.IsLinkLocalUnicast()
+	if ip == nil || ip.To4() != nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	for _, cidr := range nonHostIPv6CIDRs {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil && network.Contains(ip) {
+			return false
+		}
+	}
+	return true
 }
 
 func candidateDefaultPriority(candidateType string) int {
@@ -98,6 +118,8 @@ func candidateDefaultPriority(candidateType string) int {
 		return candidatePriorityLAN4
 	case "host6":
 		return candidatePriorityHost6
+	case "observed6":
+		return candidatePriorityObserved6
 	case "mapped4":
 		return candidatePriorityMapped4
 	case "observed4":
@@ -128,7 +150,7 @@ func normalizeCandidate(candidate Candidate) (Candidate, bool) {
 		if ip.To4() == nil || !ip.IsPrivate() {
 			return Candidate{}, false
 		}
-	case "host6":
+	case "host6", "observed6":
 		if !isUsableGlobalIPv6(ip) {
 			return Candidate{}, false
 		}
@@ -156,7 +178,7 @@ func normalizeCandidate(candidate Candidate) (Candidate, bool) {
 func buildProbeCandidates(advertised []Candidate, publicEndpoint, lanEndpoint string, sameNAT, allowIPv6 bool) []Candidate {
 	all := make([]Candidate, 0, len(advertised)+2)
 	for _, candidate := range advertised {
-		if candidate.Type == "host6" && !allowIPv6 {
+		if (candidate.Type == "host6" || candidate.Type == "observed6") && !allowIPv6 {
 			continue
 		}
 		if candidate.Type == "lan4" && !sameNAT {
@@ -264,4 +286,34 @@ func candidateTypeForEndpoint(candidates []Candidate, endpoint string) string {
 
 func candidateEndpointExists(candidates []Candidate, endpoint string) bool {
 	return candidateTypeForEndpoint(candidates, endpoint) != ""
+}
+
+func candidateListHasType(candidates []Candidate, candidateType string) bool {
+	for _, candidate := range candidates {
+		if candidate.Type == candidateType {
+			return true
+		}
+	}
+	return false
+}
+
+func observedTypeForEndpoint(endpoint string) string {
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return ""
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return ""
+	}
+	if ip.To4() != nil {
+		if ip.IsGlobalUnicast() && !ip.IsPrivate() {
+			return "observed4"
+		}
+		return ""
+	}
+	if isUsableGlobalIPv6(ip) {
+		return "observed6"
+	}
+	return ""
 }
