@@ -14,8 +14,7 @@ import threading
 import time
 import urllib.request
 
-
-VERSION = "6.2.0"
+VERSION = "7.0.0-alpha.1"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
 AGENT_PORT = 8898
@@ -23,14 +22,14 @@ ANNOUNCE_TTL = 150
 SESSION_TTL = 120
 OFFER_REFRESH = 60
 PUSH_TIMEOUT = 2
-MAX_REQUEST_SIZE = 4096
-NOTIFY_KEY_FILE = os.environ.get(
-    "P2P_NOTIFY_KEY_FILE", "/etc/wireguard-p2p/notify.key"
-)
+MAX_REQUEST_SIZE = 16384
+MAX_CANDIDATES = 16
+NOTIFY_KEY_FILE = os.environ.get("P2P_NOTIFY_KEY_FILE", "/etc/wireguard-p2p/notify.key")
 SERVER_IPS = {"10.0.0.2", "10.0.0.5"}
 RELAY_ONLY_IPS = {"10.0.0.8"}
 
 LAN_CANDIDATES = {}
+NODE_CANDIDATES = {}
 SESSIONS = {}
 SERVER_PUSH_STATUS = {
     server_ip: {
@@ -71,24 +70,13 @@ def record_push_result(server_ip, ok, error=""):
         status = SERVER_PUSH_STATUS[server_ip]
         previous_failures = int(status.get("consecutive_failures", 0))
         if ok:
-            status.update({
-                "ok": True,
-                "last_success": int(now),
-                "last_error_message": "",
-                "consecutive_failures": 0,
-            })
+            status.update({"ok": True, "last_success": int(now), "last_error_message": "", "consecutive_failures": 0})
             if previous_failures:
-                message_to_log = "push to {} recovered after {} failure(s)".format(
-                    server_ip, previous_failures
-                )
+                message_to_log = "push to {} recovered after {} failure(s)".format(server_ip, previous_failures)
         else:
             error = str(error)[:160]
-            status.update({
-                "ok": False,
-                "last_error": int(now),
-                "last_error_message": error,
-                "consecutive_failures": previous_failures + 1,
-            })
+            status.update({"ok": False, "last_error": int(now), "last_error_message": error,
+                           "consecutive_failures": previous_failures + 1})
             if previous_failures == 0 or now - status.get("last_error_log", 0) >= 300:
                 status["last_error_log"] = now
                 message_to_log = "push to {} failed: {}".format(server_ip, error)
@@ -104,25 +92,132 @@ def peer_role(overlay_ip):
     return "client"
 
 
+def parse_endpoint(value):
+    if not isinstance(value, str) or ":" not in value:
+        raise ValueError("invalid endpoint")
+    if value.startswith("["):
+        closing = value.find("]")
+        if closing <= 1 or closing + 1 >= len(value) or value[closing + 1] != ":":
+            raise ValueError("invalid IPv6 endpoint")
+        host = value[1:closing]
+        port_text = value[closing + 2:]
+    else:
+        host, port_text = value.rsplit(":", 1)
+        if ":" in host:
+            raise ValueError("IPv6 endpoint must use brackets")
+    address = ipaddress.ip_address(host)
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        raise ValueError("invalid endpoint port")
+    if address.is_unspecified or address.is_multicast:
+        raise ValueError("invalid endpoint address")
+    endpoint = "[{}]:{}".format(address.compressed, port) if address.version == 6 else "{}:{}".format(address.compressed, port)
+    return endpoint, address, port
+
+
 def endpoint_ip(endpoint):
     try:
-        return endpoint.rsplit(":", 1)[0].strip("[]")
-    except (AttributeError, ValueError):
+        _endpoint, address, _port = parse_endpoint(endpoint)
+        return address.compressed
+    except (TypeError, ValueError):
         return ""
+
+
+def validate_candidates(values, allow_observed=False):
+    if values is None:
+        return []
+    if not isinstance(values, list) or len(values) > MAX_CANDIDATES:
+        raise ValueError("invalid candidates")
+    allowed_types = {"lan4", "host6", "mapped4", "predicted4"}
+    if allow_observed:
+        allowed_types.add("observed4")
+    result = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, dict):
+            raise ValueError("invalid candidate")
+        candidate_type = value.get("type", "")
+        if candidate_type not in allowed_types:
+            raise ValueError("invalid candidate type")
+        endpoint, address, _port = parse_endpoint(value.get("endpoint", ""))
+        if candidate_type == "lan4" and (address.version != 4 or not address.is_private):
+            raise ValueError("lan4 candidate must be private IPv4")
+        if candidate_type == "host6" and (
+            address.version != 6 or not address.is_global or address.is_private or address.is_link_local
+        ):
+            raise ValueError("host6 candidate must be global IPv6")
+        if candidate_type in ("mapped4", "observed4", "predicted4") and address.version != 4:
+            raise ValueError("IPv4 candidate has non-IPv4 endpoint")
+        family = "udp6" if address.version == 6 else "udp4"
+        if value.get("family") not in (None, "", family):
+            raise ValueError("candidate family mismatch")
+        priority = int(value.get("priority", 0))
+        if not 0 <= priority <= 2000:
+            raise ValueError("invalid candidate priority")
+        key = (candidate_type, endpoint)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({
+            "type": candidate_type,
+            "family": family,
+            "endpoint": endpoint,
+            "priority": priority,
+            "verified": bool(value.get("verified", False)) if allow_observed else False,
+        })
+    return sorted(result, key=lambda item: item["priority"], reverse=True)
+
+
+def lan_candidate(lan_ip, listen_port):
+    address = ipaddress.ip_address(lan_ip)
+    if address.version != 4 or not address.is_private:
+        return None
+    return {
+        "type": "lan4",
+        "family": "udp4",
+        "endpoint": "{}:{}".format(address.compressed, int(listen_port)),
+        "priority": 1000,
+        "verified": False,
+    }
+
+
+def observed_candidate(endpoint):
+    try:
+        normalized, address, _port = parse_endpoint(endpoint)
+    except (TypeError, ValueError):
+        return None
+    if address.version != 4:
+        return None
+    return {
+        "type": "observed4",
+        "family": "udp4",
+        "endpoint": normalized,
+        "priority": 600,
+        "verified": True,
+    }
+
+
+def merge_candidates(*groups):
+    result = []
+    seen = set()
+    for group in groups:
+        for candidate in group or []:
+            if not candidate:
+                continue
+            key = (candidate.get("type"), candidate.get("endpoint"))
+            if not all(key) or key in seen:
+                continue
+            seen.add(key)
+            result.append(dict(candidate))
+    return sorted(result, key=lambda item: int(item.get("priority", 0)), reverse=True)[:MAX_CANDIDATES]
 
 
 def wg_peers():
     if not WG_QUERY_SLOTS.acquire(timeout=2):
         raise RuntimeError("WireGuard query limit reached")
     try:
-        result = subprocess.run(
-            ["wg", "show", "wg0", "dump"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            timeout=5,
-            check=False,
-        )
+        result = subprocess.run(["wg", "show", "wg0", "dump"], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, universal_newlines=True, timeout=5, check=False)
     finally:
         WG_QUERY_SLOTS.release()
     if result.returncode != 0:
@@ -160,17 +255,23 @@ def peer_payload(peers=None):
             candidate = LAN_CANDIDATES[overlay_ip]
             if overlay_ip not in active_ips or now - candidate["seen"] > ANNOUNCE_TTL:
                 del LAN_CANDIDATES[overlay_ip]
+        for overlay_ip in list(NODE_CANDIDATES):
+            candidate = NODE_CANDIDATES[overlay_ip]
+            if overlay_ip not in active_ips or now - candidate["seen"] > ANNOUNCE_TTL:
+                del NODE_CANDIDATES[overlay_ip]
 
         for peer in peers:
-            candidate = LAN_CANDIDATES.get(peer["ip"])
-            if candidate:
-                peer["lan_endpoint"] = "{}:{}".format(
-                    candidate["lan_ip"], candidate["listen_port"]
-                )
-                peer["lan_seen"] = int(candidate["seen"])
+            lan = LAN_CANDIDATES.get(peer["ip"])
+            if lan:
+                peer["lan_endpoint"] = "{}:{}".format(lan["lan_ip"], lan["listen_port"])
+                peer["lan_seen"] = int(lan["seen"])
+                legacy_lan = [lan_candidate(lan["lan_ip"], lan["listen_port"])]
             else:
                 peer["lan_endpoint"] = ""
                 peer["lan_seen"] = 0
+                legacy_lan = []
+            stored = NODE_CANDIDATES.get(peer["ip"], {}).get("candidates", [])
+            peer["candidates"] = merge_candidates(legacy_lan, stored, [observed_candidate(peer.get("endpoint", ""))])
     return peers
 
 
@@ -186,11 +287,12 @@ def validate_announcement(data):
 
 def record_candidate(overlay_ip, lan_ip, listen_port):
     with STATE_LOCK:
-        LAN_CANDIDATES[overlay_ip] = {
-            "lan_ip": lan_ip,
-            "listen_port": listen_port,
-            "seen": time.time(),
-        }
+        LAN_CANDIDATES[overlay_ip] = {"lan_ip": lan_ip, "listen_port": listen_port, "seen": time.time()}
+
+
+def record_node_candidates(overlay_ip, candidates):
+    with STATE_LOCK:
+        NODE_CANDIDATES[overlay_ip] = {"candidates": list(candidates), "seen": time.time()}
 
 
 def find_source_peer(source_ip, peers):
@@ -203,61 +305,61 @@ def signed_post(server_ip, path, payload):
     signed = timestamp.encode() + b"\n" + body
     signature = hmac.new(NOTIFY_KEY, signed, hashlib.sha256).hexdigest()
     request = urllib.request.Request(
-        "http://{}:{}{}".format(server_ip, AGENT_PORT, path),
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "X-P2P-Timestamp": timestamp,
-            "X-P2P-Signature": signature,
-        },
+        "http://{}:{}{}".format(server_ip, AGENT_PORT, path), data=body,
+        headers={"Content-Type": "application/json", "X-P2P-Timestamp": timestamp, "X-P2P-Signature": signature},
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(request, timeout=PUSH_TIMEOUT) as response:
         return json.loads(response.read().decode())
 
 
-def offer_fingerprint(client, client_lan_endpoint, server):
+def offer_fingerprint(client, client_lan_endpoint, client_candidates, server):
     return "|".join([
-        client.get("key", ""),
-        client.get("endpoint", ""),
-        client_lan_endpoint,
-        server.get("key", ""),
-        server.get("endpoint", ""),
+        client.get("key", ""), client.get("endpoint", ""), client_lan_endpoint,
+        json.dumps(client_candidates, separators=(",", ":"), sort_keys=True),
+        server.get("key", ""), server.get("endpoint", ""),
     ])
 
 
-def push_offer(server, client, client_lan_endpoint):
-    same_nat = endpoint_ip(server.get("endpoint", "")) == endpoint_ip(
-        client.get("endpoint", "")
-    )
+def push_offer(server, client, client_lan_endpoint, client_candidates):
+    same_nat = endpoint_ip(server.get("endpoint", "")) == endpoint_ip(client.get("endpoint", ""))
     candidate = client_lan_endpoint if same_nat else client.get("endpoint", "")
     if not candidate:
         raise RuntimeError("client endpoint unavailable")
+    legacy_lan = []
+    if client_lan_endpoint:
+        try:
+            _endpoint, address, port = parse_endpoint(client_lan_endpoint)
+            if address.version == 4 and address.is_private:
+                legacy_lan = [lan_candidate(address.compressed, port)]
+        except ValueError:
+            pass
+    candidates = merge_candidates(legacy_lan, client_candidates, [observed_candidate(client.get("endpoint", ""))])
     return signed_post(server["ip"], "/offer", {
+        "protocol": 7,
         "peer_key": client["key"],
         "peer_ip": client["ip"],
         "endpoint": candidate,
         "endpoint_type": "LAN" if same_nat else "WAN",
+        "candidates": candidates,
         "lease_expires": int(time.time()) + SESSION_TTL,
     })
 
 
-def coordinate_client(client, client_lan_endpoint, peers, force=False):
+def coordinate_client(client, client_lan_endpoint, peers, client_candidates=None, force=False):
     now = time.time()
+    client_candidates = client_candidates or []
     servers = [peer for peer in peers if peer.get("role") == "server"]
     with COORDINATE_LOCK:
         with STATE_LOCK:
             is_new_session = client["ip"] not in SESSIONS
             session = SESSIONS.setdefault(client["ip"], {
-                "key": client["key"],
-                "ip": client["ip"],
-                "last_seen": now,
-                "last_push": {},
-                "fingerprints": {},
-                "server_info": {},
+                "key": client["key"], "ip": client["ip"], "last_seen": now,
+                "last_push": {}, "fingerprints": {}, "server_info": {},
             })
             session["key"] = client["key"]
             session["last_seen"] = now
+            session["candidates"] = list(client_candidates)
             last_push = dict(session.get("last_push", {}))
             fingerprints = dict(session.get("fingerprints", {}))
 
@@ -266,7 +368,7 @@ def coordinate_client(client, client_lan_endpoint, peers, force=False):
 
         pending = []
         for server in servers:
-            fingerprint = offer_fingerprint(client, client_lan_endpoint, server)
+            fingerprint = offer_fingerprint(client, client_lan_endpoint, client_candidates, server)
             server_ip = server["ip"]
             refresh_due = now - float(last_push.get(server_ip, 0)) >= OFFER_REFRESH
             if force or fingerprints.get(server_ip) != fingerprint or refresh_due:
@@ -276,8 +378,7 @@ def coordinate_client(client, client_lan_endpoint, peers, force=False):
         if pending:
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 future_map = {
-                    executor.submit(push_offer, server, client, client_lan_endpoint):
-                    (server, fingerprint)
+                    executor.submit(push_offer, server, client, client_lan_endpoint, client_candidates): (server, fingerprint)
                     for server, fingerprint in pending
                 }
                 for future, item in future_map.items():
@@ -291,7 +392,6 @@ def coordinate_client(client, client_lan_endpoint, peers, force=False):
                             record_push_result(server["ip"], False, "negative response")
                     except Exception as exc:
                         record_push_result(server["ip"], False, exc)
-                        continue
 
         with STATE_LOCK:
             session = SESSIONS.get(client["ip"])
@@ -305,22 +405,20 @@ def coordinate_client(client, client_lan_endpoint, peers, force=False):
                 session["server_info"][server_ip] = info
                 try:
                     lan_ip, listen_port = validate_announcement(info)
-                    LAN_CANDIDATES[server_ip] = {
-                        "lan_ip": lan_ip,
-                        "listen_port": listen_port,
-                        "seen": now,
-                    }
+                    LAN_CANDIDATES[server_ip] = {"lan_ip": lan_ip, "listen_port": listen_port, "seen": now}
                 except (KeyError, TypeError, ValueError):
+                    pass
+                try:
+                    server_candidates = validate_candidates(info.get("candidates", []), allow_observed=False)
+                    NODE_CANDIDATES[server_ip] = {"candidates": server_candidates, "seen": now}
+                except (TypeError, ValueError):
                     pass
 
 
 def push_remove(client):
     payload = {"peer_key": client["key"], "peer_ip": client["ip"]}
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_map = {
-            executor.submit(signed_post, server_ip, "/remove", payload): server_ip
-            for server_ip in SERVER_IPS
-        }
+        future_map = {executor.submit(signed_post, server_ip, "/remove", payload): server_ip for server_ip in SERVER_IPS}
         for future, server_ip in future_map.items():
             try:
                 result = future.result()
@@ -336,9 +434,11 @@ def disconnect_client(client):
     with STATE_LOCK:
         existed = SESSIONS.pop(client["ip"], None) is not None
         LAN_CANDIDATES.pop(client["ip"], None)
+        NODE_CANDIDATES.pop(client["ip"], None)
         if not SESSIONS:
             for server_ip in SERVER_IPS:
                 LAN_CANDIDATES.pop(server_ip, None)
+                NODE_CANDIDATES.pop(server_ip, None)
     if existed:
         log("session closed for {}".format(client["ip"]))
     push_remove(client)
@@ -354,9 +454,11 @@ def session_reaper():
                     expired.append(session)
                     del SESSIONS[overlay_ip]
                     LAN_CANDIDATES.pop(overlay_ip, None)
+                    NODE_CANDIDATES.pop(overlay_ip, None)
             if not SESSIONS:
                 for server_ip in SERVER_IPS:
                     LAN_CANDIDATES.pop(server_ip, None)
+                    NODE_CANDIDATES.pop(server_ip, None)
         for session in expired:
             log("session expired for {}".format(session["ip"]))
             push_remove(session)
@@ -395,19 +497,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 with STATE_LOCK:
                     session_count = len(SESSIONS)
                     server_push = {
-                        server_ip: {
-                            key: value
-                            for key, value in status.items()
-                            if key != "last_error_log"
-                        }
+                        server_ip: {key: value for key, value in status.items() if key != "last_error_log"}
                         for server_ip, status in SERVER_PUSH_STATUS.items()
                     }
                 self.send_json(200, {
-                    "ok": True,
-                    "version": VERSION,
-                    "peer_count": len(peers),
-                    "session_count": session_count,
-                    "server_push": server_push,
+                    "ok": True, "version": VERSION, "protocol": 7,
+                    "peer_count": len(peers), "session_count": session_count, "server_push": server_push,
                 })
                 return
             self.send_json(404, {"error": "not found"})
@@ -429,22 +524,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if self.path == "/disconnect":
                 if source.get("role") == "client":
                     disconnect_client(source)
-                self.send_json(200, {"ok": True, "version": VERSION})
+                self.send_json(200, {"ok": True, "version": VERSION, "protocol": 7})
                 return
 
             lan_ip, listen_port = validate_announcement(data)
             record_candidate(source["ip"], lan_ip, listen_port)
+            advertised = validate_candidates(data.get("candidates", []), allow_observed=False)
+            if not advertised:
+                advertised = [lan_candidate(lan_ip, listen_port)]
+            record_node_candidates(source["ip"], advertised)
             lan_endpoint = "{}:{}".format(lan_ip, listen_port)
             if source.get("role") == "client":
-                coordinate_client(source, lan_endpoint, peers)
+                coordinate_client(source, lan_endpoint, peers, advertised)
 
             if self.path in ("/sync", "/connect"):
-                self.send_json(200, {
-                    "version": VERSION,
-                    "peers": peer_payload(peers),
-                })
+                self.send_json(200, {"version": VERSION, "protocol": 7, "peers": peer_payload(peers)})
             else:
-                self.send_json(200, {"ok": True, "version": VERSION})
+                self.send_json(200, {"ok": True, "version": VERSION, "protocol": 7})
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})
         except Exception:
