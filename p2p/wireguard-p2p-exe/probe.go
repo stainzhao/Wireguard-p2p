@@ -24,6 +24,13 @@ func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 	}
 
 	ourNAT := endpointIP(ours.Endpoint)
+	allowIPv6 := false
+	for _, candidate := range ours.Candidates {
+		if candidate.Type == "host6" {
+			allowIPv6 = true
+			break
+		}
+	}
 	locals, err := a.localPeers()
 	if err != nil {
 		return err
@@ -41,7 +48,7 @@ func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 		}
 
 		sameNAT := ourNAT != "" && endpointIP(peer.Endpoint) == ourNAT
-		candidates := buildProbeCandidates(peer.Candidates, peer.Endpoint, peer.LanEndpoint, sameNAT)
+		candidates := buildProbeCandidates(peer.Candidates, peer.Endpoint, peer.LanEndpoint, sameNAT, allowIPv6)
 		if len(candidates) == 0 {
 			continue
 		}
