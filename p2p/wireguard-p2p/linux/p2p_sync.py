@@ -17,7 +17,9 @@ import urllib.request
 VERSION = "6.1.0"
 API_URL = os.environ.get("P2P_API_URL", "http://10.0.0.1:8899")
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
-STATE_FILE = os.environ.get("P2P_STATE_FILE", "/var/lib/wireguard-p2p/state.json")
+STATE_FILE = os.environ.get(
+    "P2P_STATE_FILE", "/run/wireguard-p2p/legacy-sync-state.json"
+)
 LOCK_FILE = os.environ.get("P2P_LOCK_FILE", "/run/wireguard-p2p/sync.lock")
 KEEPALIVE = 25
 ONLINE_MAX_AGE = 180
@@ -35,6 +37,14 @@ def log(message):
     print("[{}] {}".format(time.strftime("%m-%d %H:%M:%S"), message), flush=True)
 
 
+def log_error(message):
+    print(
+        "[{}] {}".format(time.strftime("%m-%d %H:%M:%S"), message),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 class ErrorReporter:
     def __init__(self):
         self.message = ""
@@ -43,7 +53,7 @@ class ErrorReporter:
     def report(self, message):
         now = time.time()
         if message != self.message or now - self.last_report >= MAX_ERROR_INTERVAL:
-            log("sync failed: {}".format(message))
+            log_error("sync failed: {}".format(message))
             self.message = message
             self.last_report = now
 
