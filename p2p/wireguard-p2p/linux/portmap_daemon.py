@@ -15,7 +15,7 @@ from portmap import PortMapper
 
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 STATE_FILE = os.environ.get(
-    "P2P_PORTMAP_STATE_FILE", "/run/wireguard-p2p/mapped4.json"
+    "P2P_PORTMAP_STATE_FILE", "/var/lib/wireguard-p2p/mapped4.json"
 )
 POLL_INTERVAL = int(os.environ.get("P2P_PORTMAP_POLL", "15"))
 STOP = threading.Event()
