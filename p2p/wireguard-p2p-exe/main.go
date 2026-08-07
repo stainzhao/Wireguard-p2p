@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	version          = "6.2.0"
+	version          = "7.0.0-alpha.1"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
@@ -38,11 +38,12 @@ var serverKeys = map[string]string{
 }
 
 type apiPeer struct {
-	Key             string `json:"key"`
-	IP              string `json:"ip"`
-	Endpoint        string `json:"endpoint"`
-	LatestHandshake int64  `json:"latest_handshake"`
-	LanEndpoint     string `json:"lan_endpoint"`
+	Key             string      `json:"key"`
+	IP              string      `json:"ip"`
+	Endpoint        string      `json:"endpoint"`
+	LatestHandshake int64       `json:"latest_handshake"`
+	LanEndpoint     string      `json:"lan_endpoint"`
+	Candidates      []Candidate `json:"candidates,omitempty"`
 }
 
 type apiSyncResponse struct {
@@ -103,8 +104,6 @@ func main() {
 	a := &app{
 		preferredInterface: *preferred,
 		wgPath:             wgPath,
-		// Keep the request timeout below the Windows console-close grace period,
-		// so closing the window still has time to remove dynamic peers.
 		httpClient: &http.Client{
 			Timeout:   3 * time.Second,
 			Transport: &http.Transport{Proxy: nil},
@@ -271,7 +270,8 @@ func (a *app) syncOnce() error {
 	if ip == "" {
 		return errors.New("no private LAN IPv4 address")
 	}
-	peers, err := a.apiSync(ip, port)
+	candidates := gatherLocalCandidates(port, ip)
+	peers, err := a.apiSync(ip, port, candidates)
 	if err != nil {
 		return err
 	}
@@ -470,8 +470,14 @@ func (a *app) apiGet(path string, output any) error {
 	return json.NewDecoder(response.Body).Decode(output)
 }
 
-func (a *app) apiSync(lanIP string, listenPort int) ([]apiPeer, error) {
-	body, _ := json.Marshal(map[string]any{"lan_ip": lanIP, "listen_port": listenPort})
+func (a *app) apiSync(lanIP string, listenPort int, candidates []Candidate) ([]apiPeer, error) {
+	payload := map[string]any{
+		"protocol":    7,
+		"lan_ip":      lanIP,
+		"listen_port": listenPort,
+		"candidates":  candidates,
+	}
+	body, _ := json.Marshal(payload)
 	for _, path := range []string{"/connect", "/sync"} {
 		request, _ := http.NewRequest(http.MethodPost, apiBase+path, bytes.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
@@ -497,7 +503,7 @@ func (a *app) apiSync(lanIP string, listenPort int) ([]apiPeer, error) {
 		return result.Peers, nil
 	}
 
-	if err := a.apiPost("/announce", map[string]any{"lan_ip": lanIP, "listen_port": listenPort}, nil); err != nil {
+	if err := a.apiPost("/announce", payload, nil); err != nil {
 		return nil, err
 	}
 	var peers []apiPeer
