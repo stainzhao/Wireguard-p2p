@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
@@ -28,7 +29,7 @@ from candidates import (
     select_probe_candidates,
 )
 
-VERSION = "7.0.0-beta.1"
+VERSION = "7.0.0"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
@@ -44,10 +45,15 @@ PROBE_POLL_INTERVAL = 0.25
 RETRY_DELAYS = (60, 120)
 FAILURE_COOLDOWN = 1800
 MAX_REQUEST_SIZE = 16384
+NOTIFICATION_MAX_SKEW = 30
+NONCE_TTL = 60
+MAX_SEEN_NONCES = 4096
 VERBOSE_LOG = os.environ.get("P2P_VERBOSE_LOG", "0") == "1"
 
 STATES = {}
+SEEN_NONCES = {}
 STATE_LOCK = threading.Lock()
+NONCE_LOCK = threading.Lock()
 WG_LOCK = threading.Lock()
 STOP = threading.Event()
 SERVER = None
@@ -59,7 +65,11 @@ def log(message):
 
 
 def log_error(message):
-    print("[{}] {}".format(time.strftime("%m-%d %H:%M:%S"), message), file=sys.stderr, flush=True)
+    print(
+        "[{}] {}".format(time.strftime("%m-%d %H:%M:%S"), message),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def load_notify_key():
@@ -74,10 +84,18 @@ NOTIFY_KEY = None
 
 
 def run(command, timeout=10):
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            universal_newlines=True, timeout=timeout, check=False)
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+        timeout=timeout,
+        check=False,
+    )
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "command failed: {}".format(command[0]))
+        raise RuntimeError(
+            result.stderr.strip() or "command failed: {}".format(command[0])
+        )
     return result.stdout.strip()
 
 
@@ -112,7 +130,9 @@ def load_state():
         with open(STATE_FILE) as handle:
             state = json.load(handle)
         if isinstance(state, dict):
-            result = {key: value for key, value in state.items() if isinstance(value, dict)}
+            result = {
+                key: value for key, value in state.items() if isinstance(value, dict)
+            }
             for item in result.values():
                 item["worker_running"] = False
                 item["generation"] = int(item.get("generation", 0)) + 1
@@ -170,9 +190,37 @@ def validate_peer_ip(value):
     address = ipaddress.ip_address(value)
     if address.version != 4 or address not in ipaddress.ip_network("10.0.0.0/24"):
         raise ValueError("invalid peer overlay IP")
-    if str(address) in (VPS_ADDRESS, LISTEN_ADDRESS, "10.0.0.2", "10.0.0.5", "10.0.0.8"):
+    if str(address) in (
+        VPS_ADDRESS,
+        LISTEN_ADDRESS,
+        "10.0.0.2",
+        "10.0.0.5",
+        "10.0.0.8",
+    ):
         raise ValueError("peer is not P2P eligible")
     return str(address)
+
+
+def validate_session_id(value):
+    if not isinstance(value, str):
+        raise ValueError("invalid session id")
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError("invalid session id")
+    canonical = str(parsed)
+    if value.lower() != canonical:
+        raise ValueError("invalid session id")
+    return canonical
+
+
+def validate_session_started_ns(value):
+    started = int(value)
+    if started <= 0:
+        raise ValueError("invalid session start")
+    if started > time.time_ns() + 60_000_000_000:
+        raise ValueError("session start is in the future")
+    return started
 
 
 def validate_endpoint(value):
@@ -214,7 +262,11 @@ def validate_candidates(values):
         if candidate_type not in allowed_types:
             raise ValueError("invalid candidate type")
         endpoint = validate_endpoint(value.get("endpoint", ""))
-        address = ipaddress.ip_address(endpoint[1:endpoint.index("]")] if endpoint.startswith("[") else endpoint.rsplit(":", 1)[0])
+        address = ipaddress.ip_address(
+            endpoint[1:endpoint.index("]")]
+            if endpoint.startswith("[")
+            else endpoint.rsplit(":", 1)[0]
+        )
         family = "udp6" if address.version == 6 else "udp4"
         if value.get("family") not in (None, "", family):
             raise ValueError("candidate family mismatch")
@@ -243,16 +295,85 @@ def retry_delay(failures):
     return FAILURE_COOLDOWN
 
 
+def signature_payload(method, path, timestamp, nonce, body):
+    return b"\n".join([
+        method.upper().encode(),
+        path.encode(),
+        timestamp.encode(),
+        nonce.encode(),
+        body,
+    ])
+
+
+def validate_nonce(value):
+    if not isinstance(value, str) or len(value) != 32:
+        raise PermissionError("invalid notification nonce")
+    try:
+        decoded = bytes.fromhex(value)
+    except ValueError:
+        raise PermissionError("invalid notification nonce")
+    if len(decoded) != 16:
+        raise PermissionError("invalid notification nonce")
+    return value.lower()
+
+
+def consume_nonce(nonce, now=None):
+    now = time.time() if now is None else float(now)
+    with NONCE_LOCK:
+        cutoff = now - NONCE_TTL
+        for value, seen_at in list(SEEN_NONCES.items()):
+            if seen_at < cutoff:
+                del SEEN_NONCES[value]
+        if nonce in SEEN_NONCES:
+            raise PermissionError("replayed notification")
+        if len(SEEN_NONCES) >= MAX_SEEN_NONCES:
+            oldest = min(SEEN_NONCES, key=SEEN_NONCES.get)
+            del SEEN_NONCES[oldest]
+        SEEN_NONCES[nonce] = now
+
+
+def verify_signed_notification(
+    method, path, timestamp_text, nonce_text, signature, body, now=None
+):
+    if NOTIFY_KEY is None:
+        raise RuntimeError("notification key is not loaded")
+    now = time.time() if now is None else float(now)
+    try:
+        timestamp = int(timestamp_text)
+    except (TypeError, ValueError):
+        raise PermissionError("invalid notification timestamp")
+    if abs(now - timestamp) > NOTIFICATION_MAX_SKEW:
+        raise PermissionError("expired notification")
+    nonce = validate_nonce(nonce_text)
+    expected = hmac.new(
+        NOTIFY_KEY,
+        signature_payload(method, path, timestamp_text, nonce, body),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature or "", expected):
+        raise PermissionError("invalid notification signature")
+    consume_nonce(nonce, now)
+    return json.loads(body.decode())
+
+
 def probe_generation_current(key, generation):
     with STATE_LOCK:
         state = STATES.get(key)
-        return bool(state and state.get("generation") == generation and state.get("worker_running"))
+        return bool(
+            state
+            and state.get("generation") == generation
+            and state.get("worker_running")
+        )
 
 
 def probe_worker(key, generation):
     with STATE_LOCK:
         state = STATES.get(key)
-        if not state or state.get("generation") != generation or not state.get("worker_running"):
+        if (
+            not state
+            or state.get("generation") != generation
+            or not state.get("worker_running")
+        ):
             return
         candidates = list(state.get("candidates", []))
         peer_ip = state.get("ip", "")
@@ -274,11 +395,21 @@ def probe_worker(key, generation):
 
         with STATE_LOCK:
             state = STATES.get(key)
-            if not state or state.get("generation") != generation or not state.get("worker_running"):
+            if (
+                not state
+                or state.get("generation") != generation
+                or not state.get("worker_running")
+            ):
                 return
             try:
-                wg_set("peer", key, "endpoint", candidate["endpoint"],
-                       "persistent-keepalive", str(PROBE_KEEPALIVE))
+                wg_set(
+                    "peer",
+                    key,
+                    "endpoint",
+                    candidate["endpoint"],
+                    "persistent-keepalive",
+                    str(PROBE_KEEPALIVE),
+                )
             except Exception as exc:
                 log_error("probe candidate setup failed: {}".format(exc))
                 continue
@@ -299,18 +430,37 @@ def probe_worker(key, generation):
             if not probe_generation_current(key, generation):
                 return
             local = local_wg_peers().get(key)
-            if not local or int(local.get("latest_handshake", 0) or 0) <= baseline:
+            if (
+                not local
+                or int(local.get("latest_handshake", 0) or 0) <= baseline
+            ):
                 continue
 
             actual_endpoint = local.get("endpoint") or candidate["endpoint"]
             with STATE_LOCK:
                 state = STATES.get(key)
-                if not state or state.get("generation") != generation or not state.get("worker_running"):
+                if (
+                    not state
+                    or state.get("generation") != generation
+                    or not state.get("worker_running")
+                ):
                     return
-                selected_type = candidate_type_for_endpoint(state.get("candidates", []), actual_endpoint) or candidate["type"]
-                wg_set("peer", key, "allowed-ips", peer_ip + "/32",
-                       "endpoint", actual_endpoint,
-                       "persistent-keepalive", str(KEEPALIVE))
+                selected_type = (
+                    candidate_type_for_endpoint(
+                        state.get("candidates", []), actual_endpoint
+                    )
+                    or candidate["type"]
+                )
+                wg_set(
+                    "peer",
+                    key,
+                    "allowed-ips",
+                    peer_ip + "/32",
+                    "endpoint",
+                    actual_endpoint,
+                    "persistent-keepalive",
+                    str(KEEPALIVE),
+                )
                 state.update({
                     "mode": "direct",
                     "endpoint": actual_endpoint,
@@ -324,12 +474,20 @@ def probe_worker(key, generation):
                     "baseline_handshake": 0,
                 })
                 save_state()
-            log("P2P OK {} via {} {}".format(peer_ip, selected_type, actual_endpoint))
+            log(
+                "P2P OK {} via {} {}".format(
+                    peer_ip, selected_type, actual_endpoint
+                )
+            )
             return
 
     with STATE_LOCK:
         state = STATES.get(key)
-        if not state or state.get("generation") != generation or not state.get("worker_running"):
+        if (
+            not state
+            or state.get("generation") != generation
+            or not state.get("worker_running")
+        ):
             return
         try:
             wg_set("peer", key, "remove")
@@ -353,23 +511,52 @@ def probe_worker(key, generation):
 
 
 def launch_probe(key, generation):
-    thread = threading.Thread(target=probe_worker, args=(key, generation),
-                              name="probe-{}".format(key[:8]))
+    thread = threading.Thread(
+        target=probe_worker,
+        args=(key, generation),
+        name="probe-{}".format(key[:8]),
+    )
     thread.daemon = True
     thread.start()
+
+
+def new_peer_state(peer_ip, session_id, session_started_ns):
+    return {
+        "session_id": session_id,
+        "session_started_ns": session_started_ns,
+        "ip": peer_ip,
+        "mode": "idle",
+        "endpoint": "",
+        "endpoint_type": "",
+        "selected_type": "",
+        "candidates": [],
+        "candidate_signature": "",
+        "started": 0,
+        "baseline_handshake": 0,
+        "failures": 0,
+        "retry_after": 0,
+        "generation": 1,
+        "worker_running": False,
+    }
 
 
 def handle_offer(data):
     now = time.time()
     key = validate_public_key(data["peer_key"])
     peer_ip = validate_peer_ip(data["peer_ip"])
+    session_id = validate_session_id(data["session_id"])
+    session_started_ns = validate_session_started_ns(data["session_started_ns"])
     advertised = validate_candidates(data.get("candidates", []))
-    legacy_endpoint = validate_endpoint(data["endpoint"]) if data.get("endpoint") else ""
+    legacy_endpoint = (
+        validate_endpoint(data["endpoint"]) if data.get("endpoint") else ""
+    )
     endpoint_type = data.get("endpoint_type", "WAN")
-    candidates = select_probe_candidates(advertised, legacy_endpoint, endpoint_type)
+    candidates = select_probe_candidates(
+        advertised, legacy_endpoint, endpoint_type
+    )
     if not candidates:
         raise ValueError("peer endpoint unavailable")
-    signature = candidate_signature(candidates)
+    candidate_sig = candidate_signature(candidates)
     requested_expiry = float(data.get("lease_expires", now + 120))
     lease_expires = min(max(requested_expiry, now + 30), now + 180)
     launch = False
@@ -379,43 +566,63 @@ def handle_offer(data):
         current = local_wg_peers()
         local = current.get(key)
         state = STATES.get(key)
-        if state is None:
-            state = {
-                "ip": peer_ip,
-                "mode": "idle",
-                "endpoint": "",
-                "endpoint_type": "",
-                "selected_type": "",
-                "candidates": [],
-                "candidate_signature": "",
-                "started": 0,
-                "baseline_handshake": 0,
-                "failures": 0,
-                "retry_after": 0,
-                "generation": 1,
-                "worker_running": False,
-            }
-            STATES[key] = state
 
+        if state is not None and state.get("session_id") != session_id:
+            current_started = int(state.get("session_started_ns", 0) or 0)
+            if current_started and session_started_ns <= current_started:
+                return {
+                    "ok": True,
+                    "version": VERSION,
+                    "protocol": 7,
+                    "ignored": True,
+                    "reason": "stale_session",
+                }
+            state["generation"] = int(state.get("generation", 0)) + 1
+            state["worker_running"] = False
+            if local:
+                wg_set("peer", key, "remove")
+                local = None
+            state = new_peer_state(peer_ip, session_id, session_started_ns)
+            STATES[key] = state
+        elif state is None:
+            state = new_peer_state(peer_ip, session_id, session_started_ns)
+            STATES[key] = state
+        else:
+            current_started = int(state.get("session_started_ns", 0) or 0)
+            if current_started and current_started != session_started_ns:
+                raise ValueError("session start changed for active session")
+            state["session_started_ns"] = session_started_ns
+
+        state["session_id"] = session_id
         state["ip"] = peer_ip
         state["lease_expires"] = lease_expires
-        direct = bool(local and peer_ip + "/32" in local.get("allowed_ips", []))
-        signature_changed = state.get("candidate_signature") != signature
+        direct = bool(
+            local and peer_ip + "/32" in local.get("allowed_ips", [])
+        )
+        signature_changed = state.get("candidate_signature") != candidate_sig
         state["candidates"] = candidates
 
         if signature_changed:
-            state["candidate_signature"] = signature
+            state["candidate_signature"] = candidate_sig
             state["generation"] = int(state.get("generation", 0)) + 1
             state["failures"] = 0
             state["retry_after"] = 0
             state["worker_running"] = False
 
-            if direct and local.get("latest_handshake") and now - local["latest_handshake"] <= DIRECT_MAX_AGE \
-                    and candidate_endpoint_exists(candidates, local.get("endpoint", "")):
+            if (
+                direct
+                and local.get("latest_handshake")
+                and now - local["latest_handshake"] <= DIRECT_MAX_AGE
+                and candidate_endpoint_exists(
+                    candidates, local.get("endpoint", "")
+                )
+            ):
                 state.update({
                     "mode": "direct",
                     "endpoint": local.get("endpoint", ""),
-                    "selected_type": candidate_type_for_endpoint(candidates, local.get("endpoint", "")),
+                    "selected_type": candidate_type_for_endpoint(
+                        candidates, local.get("endpoint", "")
+                    ),
                 })
                 save_state()
             else:
@@ -423,7 +630,12 @@ def handle_offer(data):
                     wg_set("peer", key, "remove")
                     local = None
                     direct = False
-                state.update({"mode": "idle", "endpoint": "", "selected_type": "", "started": 0})
+                state.update({
+                    "mode": "idle",
+                    "endpoint": "",
+                    "selected_type": "",
+                    "started": 0,
+                })
 
         if direct:
             latest = int(local.get("latest_handshake", 0) or 0)
@@ -436,12 +648,19 @@ def handle_offer(data):
                 wg_set("peer", key, "remove")
                 state["generation"] = int(state.get("generation", 0)) + 1
                 state.update({
-                    "mode": "idle", "endpoint": "", "selected_type": "",
-                    "retry_after": 0, "worker_running": False,
+                    "mode": "idle",
+                    "endpoint": "",
+                    "selected_type": "",
+                    "retry_after": 0,
+                    "worker_running": False,
                 })
                 direct = False
 
-        if not direct and now >= float(state.get("retry_after", 0)) and not state.get("worker_running"):
+        if (
+            not direct
+            and now >= float(state.get("retry_after", 0))
+            and not state.get("worker_running")
+        ):
             state["worker_running"] = True
             state["mode"] = "probe"
             generation = int(state.get("generation", 0))
@@ -457,6 +676,7 @@ def handle_offer(data):
         "ok": True,
         "version": VERSION,
         "protocol": 7,
+        "session_id": session_id,
         "key": public_key(),
         "ip": LISTEN_ADDRESS,
         "lan_ip": lan_ip,
@@ -468,18 +688,36 @@ def handle_offer(data):
 def handle_remove(data):
     key = validate_public_key(data["peer_key"])
     peer_ip = validate_peer_ip(data["peer_ip"])
+    session_id = validate_session_id(data["session_id"])
     with STATE_LOCK:
+        state = STATES.get(key)
+        if (
+            state is None
+            or state.get("session_id") != session_id
+            or state.get("ip") != peer_ip
+        ):
+            return {
+                "ok": True,
+                "version": VERSION,
+                "protocol": 7,
+                "removed": False,
+                "reason": "session_mismatch",
+            }
+
         current = local_wg_peers()
         if key in current:
             wg_set("peer", key, "remove")
-        state = STATES.get(key)
-        if state:
-            state["generation"] = int(state.get("generation", 0)) + 1
-            state["worker_running"] = False
-            del STATES[key]
-            save_state()
-            log("removed expired peer {}".format(peer_ip))
-    return {"ok": True, "version": VERSION, "protocol": 7}
+        state["generation"] = int(state.get("generation", 0)) + 1
+        state["worker_running"] = False
+        del STATES[key]
+        save_state()
+        log("removed session peer {} ({})".format(peer_ip, session_id))
+    return {
+        "ok": True,
+        "version": VERSION,
+        "protocol": 7,
+        "removed": True,
+    }
 
 
 def monitor_once():
@@ -504,7 +742,9 @@ def monitor_once():
                 changed = True
                 continue
 
-            direct = bool(local and peer_ip + "/32" in local.get("allowed_ips", []))
+            direct = bool(
+                local and peer_ip + "/32" in local.get("allowed_ips", [])
+            )
             if direct:
                 latest = int(local.get("latest_handshake", 0) or 0)
                 if latest and now - latest <= DIRECT_MAX_AGE:
@@ -514,12 +754,19 @@ def monitor_once():
                 wg_set("peer", key, "remove")
                 state["generation"] = int(state.get("generation", 0)) + 1
                 state.update({
-                    "mode": "idle", "endpoint": "", "selected_type": "",
-                    "retry_after": 0, "worker_running": False,
+                    "mode": "idle",
+                    "endpoint": "",
+                    "selected_type": "",
+                    "retry_after": 0,
+                    "worker_running": False,
                 })
                 local = None
                 changed = True
-                log("fallback {} to VPS; restarting candidate probe".format(peer_ip))
+                log(
+                    "fallback {} to VPS; restarting candidate probe".format(
+                        peer_ip
+                    )
+                )
 
             if state.get("mode") == "probe" and state.get("worker_running"):
                 continue
@@ -527,12 +774,17 @@ def monitor_once():
                 state["mode"] = "idle"
                 changed = True
 
-            if now >= float(state.get("retry_after", 0)) and not state.get("worker_running"):
+            if (
+                now >= float(state.get("retry_after", 0))
+                and not state.get("worker_running")
+            ):
                 candidates = state.get("candidates", [])
                 if candidates:
                     state["worker_running"] = True
                     state["mode"] = "probe"
-                    launches.append((key, int(state.get("generation", 0))))
+                    launches.append(
+                        (key, int(state.get("generation", 0)))
+                    )
                     changed = True
 
         if changed:
@@ -564,7 +816,10 @@ def cleanup_orphans():
     with STATE_LOCK:
         current = local_wg_peers()
         for key, peer in current.items():
-            if any(value.endswith("/32") for value in peer["allowed_ips"]) and key not in STATES:
+            if (
+                any(value.endswith("/32") for value in peer["allowed_ips"])
+                and key not in STATES
+            ):
                 wg_set("peer", key, "remove")
                 log("removed orphan dynamic peer")
 
@@ -593,15 +848,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if size <= 0 or size > MAX_REQUEST_SIZE:
             raise ValueError("invalid request size")
         body = self.rfile.read(size)
-        timestamp_text = self.headers.get("X-P2P-Timestamp", "")
-        signature = self.headers.get("X-P2P-Signature", "")
-        timestamp = int(timestamp_text)
-        if abs(time.time() - timestamp) > 30:
-            raise PermissionError("expired notification")
-        expected = hmac.new(NOTIFY_KEY, timestamp_text.encode() + b"\n" + body, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected):
-            raise PermissionError("invalid notification signature")
-        return json.loads(body.decode())
+        return verify_signed_notification(
+            self.command,
+            self.path,
+            self.headers.get("X-P2P-Timestamp", ""),
+            self.headers.get("X-P2P-Nonce", ""),
+            self.headers.get("X-P2P-Signature", ""),
+            body,
+        )
 
     def do_GET(self):
         if self.path != "/health":
@@ -612,9 +866,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         with STATE_LOCK:
             state_count = len(STATES)
-            probing = sum(1 for item in STATES.values() if item.get("worker_running"))
-        self.send_json(200, {"ok": True, "version": VERSION, "protocol": 7,
-                             "state_count": state_count, "probing": probing})
+            probing = sum(
+                1 for item in STATES.values() if item.get("worker_running")
+            )
+        with NONCE_LOCK:
+            nonce_count = len(SEEN_NONCES)
+        self.send_json(200, {
+            "ok": True,
+            "version": VERSION,
+            "protocol": 7,
+            "security": "session-nonce-v1",
+            "state_count": state_count,
+            "probing": probing,
+            "nonce_cache": nonce_count,
+        })
 
     def do_POST(self):
         if self.path not in ("/offer", "/remove"):
@@ -622,7 +887,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         try:
             data = self.read_signed_json()
-            result = handle_offer(data) if self.path == "/offer" else handle_remove(data)
+            result = (
+                handle_offer(data)
+                if self.path == "/offer"
+                else handle_remove(data)
+            )
             self.send_json(200, result)
         except PermissionError as exc:
             self.send_json(403, {"error": str(exc)})
@@ -659,7 +928,11 @@ def main():
     monitor.daemon = True
     monitor.start()
     SERVER = ThreadingHTTPServer((LISTEN_ADDRESS, LISTEN_PORT), Handler)
-    log("event agent {} listening on {}:{}".format(VERSION, LISTEN_ADDRESS, LISTEN_PORT))
+    log(
+        "event agent {} listening on {}:{}".format(
+            VERSION, LISTEN_ADDRESS, LISTEN_PORT
+        )
+    )
     try:
         SERVER.serve_forever()
     finally:
