@@ -107,6 +107,58 @@ class CandidateProtocolTests(unittest.TestCase):
         self.assertEqual(result[0]["type"], "host6")
         self.assertEqual(result[0]["family"], "udp6")
 
+    def test_probe_selection_filters_remote_lan_on_wan(self):
+        advertised = [
+            {
+                "type": "lan4",
+                "family": "udp4",
+                "endpoint": "192.168.0.10:51820",
+                "priority": 1000,
+            },
+            {
+                "type": "host6",
+                "family": "udp6",
+                "endpoint": "[2001:4860:4860::8888]:51820",
+                "priority": 900,
+            },
+        ]
+        result = candidates.select_probe_candidates(
+            advertised, "8.8.8.8:40000", "WAN"
+        )
+        types = [item["type"] for item in result]
+        self.assertNotIn("lan4", types)
+        self.assertEqual(types, ["host6", "observed4"])
+
+    def test_probe_selection_can_skip_ipv6(self):
+        advertised = [{
+            "type": "host6",
+            "family": "udp6",
+            "endpoint": "[2001:4860:4860::8888]:51820",
+            "priority": 900,
+        }]
+        result = candidates.select_probe_candidates(
+            advertised,
+            "8.8.8.8:40000",
+            "WAN",
+            allow_ipv6=False,
+        )
+        self.assertEqual([item["type"] for item in result], ["observed4"])
+
+    def test_candidate_signature_changes_with_network_path(self):
+        first = candidates.candidate_signature([
+            {"type": "host6", "endpoint": "[2001:4860:4860::1]:51820"},
+            {"type": "observed4", "endpoint": "8.8.8.8:40000"},
+        ])
+        second = candidates.candidate_signature([
+            {"type": "host6", "endpoint": "[2001:4860:4860::2]:51820"},
+            {"type": "observed4", "endpoint": "8.8.8.8:40000"},
+        ])
+        self.assertNotEqual(first, second)
+
+    def test_beta_probe_window_is_short(self):
+        self.assertEqual(agent.CANDIDATE_PROBE_WINDOW, 2.0)
+        self.assertEqual(agent.PROBE_KEEPALIVE, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
