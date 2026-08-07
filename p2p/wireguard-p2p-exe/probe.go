@@ -290,7 +290,8 @@ func (a *app) runProbeWorker(key, serverIP string, generation int64) {
 	}
 	a.mu.Unlock()
 	if passiveIPv6 {
-		a.log("Candidate probe failed " + serverIP + "; passive IPv6 listener armed; active retry in " + delay.String() + ".")
+		go a.watchPassiveIPv6(key, serverIP, generation)
+		a.log("Candidate probe failed " + serverIP + "; passive IPv6 listener armed; fast IPv6 retry expected within seconds; fallback retry in " + delay.String() + ".")
 	} else {
 		a.log("Candidate probe failed " + serverIP + "; retry in " + delay.String() + ".")
 	}
