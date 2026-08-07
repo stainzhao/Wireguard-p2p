@@ -1120,6 +1120,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             )
         with NONCE_LOCK:
             nonce_count = len(SEEN_NONCES)
+        with REFLEXIVE6_LOCK:
+            reflexive6_address = REFLEXIVE6_ADDRESS
+            reflexive6_updated = REFLEXIVE6_UPDATED
+        reflexive6_age = (
+            max(0, int(time.time() - reflexive6_updated))
+            if reflexive6_address and reflexive6_updated
+            else None
+        )
         self.send_json(200, {
             "ok": True,
             "version": VERSION,
@@ -1128,6 +1136,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "state_count": state_count,
             "probing": probing,
             "nonce_cache": nonce_count,
+            "reflexive6": reflexive6_address,
+            "reflexive6_age": reflexive6_age,
         })
 
     def do_POST(self):

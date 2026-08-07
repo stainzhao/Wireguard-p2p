@@ -6,12 +6,11 @@ import (
 )
 
 const (
-	candidateProbeWindow = 2 * time.Second
-	probePollInterval    = 250 * time.Millisecond
-	probeKeepalive       = 1
+	candidateProbeWindow   = 2 * time.Second
+	probePollInterval      = 250 * time.Millisecond
+	probeKeepalive         = 1
 	simultaneousIPv6Window = 8 * time.Second
 )
-
 
 func probeWindowForCandidate(candidate Candidate) time.Duration {
 	if candidate.Type == "reflexive6" {

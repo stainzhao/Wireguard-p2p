@@ -1,8 +1,8 @@
-# WireGuard P2P v7.1
+# WireGuard P2P v7.3
 
 该项目在保留 VPS `10.0.0.1` 中转路由的同时，为 Windows 客户端与 GPU `10.0.0.2`、2696 `10.0.0.5` 建立动态 `/32` P2P 路由。
 
-v7.0 已完成 Candidate 快速探测和 session/nonce 安全控制面；v7.1 在此基础上启用 **PCP -> NAT-PMP -> UPnP 自动 IPv4 端口映射**，优先解决服务器处于对称 NAT 后时 `observed4` 不稳定的问题。
+v7.0 完成 Candidate 快速探测和 session/nonce 安全控制面；v7.1 加入 **PCP -> NAT-PMP -> UPnP 自动 IPv4 端口映射**；v7.2 完成 NAT66 `observed6` 被动学习与 confirmation rekey；v7.3 新增 **reflexive6 + 双向 simultaneous IPv6 punch**，用于客户端和服务器两侧都存在 IPv6 stateful firewall/NAT66 的场景。
 
 ## 运行结构
 
@@ -15,14 +15,30 @@ v7.0 已完成 Candidate 快速探测和 session/nonce 安全控制面；v7.1 �
 ## Candidate 优先级
 
 ```text
-lan4       1000   同局域网私有 IPv4
-host6       900   公网可路由 IPv6
-mapped4     800   PCP/NAT-PMP/UPnP 显式映射
-observed4   600   VPS 观察到的公网 IPv4 NAT Endpoint
-predicted4  400   对称 NAT 预测端口（v7.2 预留）
+lan4        1000   同局域网私有 IPv4
+host6        900   原生公网 IPv6
+observed6    850   WireGuard 已认证学习到的公网 IPv6 Endpoint
+reflexive6   825   NAT66 外部 IPv6 + WG ListenPort（未验证）
+mapped4      800   PCP/NAT-PMP/UPnP 显式映射
+observed4    600   VPS 观察到的公网 IPv4 NAT Endpoint
+predicted4   400   IPv4 端口预测（预留）
 ```
 
 路径失败时 VPS `/24` 始终继续工作。
+
+## v7.3 simultaneous IPv6 punch
+
+当 Linux server 没有可发布的 native `host6`，但具备 IPv6 出站能力时，Agent 会在启动时发现 NAT66 后的公网 IPv6，并生成未验证的 `reflexive6` Candidate。Windows 对 `reflexive6` 主动探测，同时 Linux 对 Windows `host6` 主动探测，两个方向各保持最多约 8 秒重叠窗口。
+
+`reflexive6` 只是假设“外部 IPv6 + 当前 WireGuard ListenPort”可达；**没有 fresh authenticated WireGuard handshake 就绝不会安装 `/32`**。发现失败、端口被 NAT66 改写或双方防火墙仍无法穿透时，自动继续原有 Candidate 和 VPS relay。完整设计见 `docs/protocol-v7.3.md`。
+
+诊断 NAT66 公网地址：
+
+```bash
+curl http://10.0.0.5:8898/health
+```
+
+返回中的 `reflexive6` 为 Agent 当前缓存的外部 IPv6。
 
 ## v7.1 mapped4
 
@@ -139,7 +155,7 @@ latest_handshake > candidate 安装前 baseline_handshake
 PersistentKeepalive = 25
 ```
 
-全部失败后删除动态 Peer，继续走 VPS；退避为 60 秒、120 秒、随后 30 分钟。Candidate 变化会解除旧冷却并重新评估。
+全部失败后删除动态 Peer，继续走 VPS。Windows fallback 退避保持 60 秒、120 秒、随后 30 分钟；Linux Agent 为快速 NAT66 恢复使用 3 秒、10 秒、随后 30 分钟。Candidate 变化会解除旧冷却并重新评估。
 
 ## v7.0 控制面安全
 
@@ -175,6 +191,7 @@ nonce 为 128 bit 随机值，时间窗口 ±30 秒，已使用 nonce 缓存 60 
 ```text
 docs/protocol-v7.md       v7.0 正式 Candidate/session/security 协议
 docs/protocol-v7.1.md     v7.1 mapped4 端口映射
+docs/protocol-v7.3.md     v7.3 reflexive6 / simultaneous IPv6 punch
 docs/protocol-v7-beta.md  历史快速探测设计
 docs/protocol-v7-alpha.md 历史 Candidate 交换设计
 ```
@@ -212,20 +229,20 @@ backup/pre-v7-alpha-20260807
 backup/pre-v7-beta-20260807
 backup/pre-v7-stable-20260807
 backup/pre-v7.1-20260807
+backup/pre-v7.3-simultaneous-ipv6-20260807
 ```
 
 ## 后续路线
 
 ```text
-v7.1.x
-  实网验证 PCP/NAT-PMP/UPnP
-  可选 Windows 侧 mapped4
-  Linux host6 本地能力过滤收尾
+v7.3.x
+  实网验证不同家庭/校园 IPv6 防火墙下的 simultaneous punch
+  根据实测决定是否需要 UDP 端口变化检测
 
-v7.2
-  NAT 行为探测
-  仅对端口分配可预测的 NAT 生成 predicted4
+v7.4（按需）
+  IPv6 端口改写/endpoint-dependent NAT66 行为探测
+  多候选 bounded port prediction
 
-v8（如确有需要）
-  userspace WireGuard + UDP mux / ICE
+v8（仅当内核 WireGuard 无法覆盖目标网络）
+  userspace WireGuard + UDP mux / ICE-like coordination
 ```

@@ -8,14 +8,14 @@ import (
 )
 
 const (
-	candidatePriorityLAN4      = 1000
-	candidatePriorityHost6     = 900
-	candidatePriorityObserved6 = 850
+	candidatePriorityLAN4       = 1000
+	candidatePriorityHost6      = 900
+	candidatePriorityObserved6  = 850
 	candidatePriorityReflexive6 = 825
-	candidatePriorityMapped4   = 800
-	candidatePriorityObserved4 = 600
-	candidatePriorityPredict4  = 400
-	maxProbeCandidates         = 5
+	candidatePriorityMapped4    = 800
+	candidatePriorityObserved4  = 600
+	candidatePriorityPredict4   = 400
+	maxProbeCandidates          = 5
 )
 
 type Candidate struct {
@@ -27,18 +27,18 @@ type Candidate struct {
 }
 
 var nonHostIPv6CIDRs = []string{
-	"64:ff9b::/96",   // IPv4/IPv6 translation WKP
-	"64:ff9b:1::/48", // local-use IPv4/IPv6 translation prefix
-	"100::/64",       // discard-only
-	"2001::/32",      // Teredo
-	"2001:2::/48",    // benchmarking
-	"2001:3::/32",    // AMT (also used by the current campus router LAN)
+	"64:ff9b::/96",    // IPv4/IPv6 translation WKP
+	"64:ff9b:1::/48",  // local-use IPv4/IPv6 translation prefix
+	"100::/64",        // discard-only
+	"2001::/32",       // Teredo
+	"2001:2::/48",     // benchmarking
+	"2001:3::/32",     // AMT (also used by the current campus router LAN)
 	"2001:4:112::/48", // AS112-v6
-	"2001:10::/28",   // ORCHID (deprecated)
-	"2001:20::/28",   // ORCHIDv2
-	"2001:db8::/32",  // documentation
-	"2002::/16",      // 6to4
-	"3fff::/20",      // documentation
+	"2001:10::/28",    // ORCHID (deprecated)
+	"2001:20::/28",    // ORCHIDv2
+	"2001:db8::/32",   // documentation
+	"2002::/16",       // 6to4
+	"3fff::/20",       // documentation
 }
 
 func gatherLocalCandidates(listenPort int, lanIP string) []Candidate {

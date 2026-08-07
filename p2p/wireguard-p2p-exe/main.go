@@ -33,7 +33,7 @@ const (
 
 var (
 	errDeviceNotRegistered = errors.New("this device is not registered/online on the VPS")
-	serverKeys = map[string]string{
+	serverKeys             = map[string]string{
 		"YmAf+TDF3vM4QyOjPLbYu51owmIpqJt7osYugYtyhSg=": "10.0.0.5", // 2696
 		"XTMmfyf2EWH7prfVCSkcWDOB5Lth5+F+OU8KsgtJhQQ=": "10.0.0.2", // GPU
 	}
