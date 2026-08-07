@@ -313,12 +313,9 @@ class PortMapper:
         now = time.time()
         key = (str(local_ip), int(internal_port))
         with self._lock:
-            if now < self._next_attempt:
-                return False
             if self._internal != key or self._candidate is None:
-                return True
-            remaining = self._expires_at - now
-            return remaining <= max(15, min(300, remaining / 3))
+                return now >= self._next_attempt
+            return now >= self._next_attempt
 
     def refresh(self, internal_port, local_ip):
         port = int(internal_port)
