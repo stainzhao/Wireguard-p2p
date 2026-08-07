@@ -1,236 +1,209 @@
-# WireGuard P2P v7.0
+# WireGuard P2P v7.1
 
 该项目在保留 VPS `10.0.0.1` 中转路由的同时，为 Windows 客户端与 GPU `10.0.0.2`、2696 `10.0.0.5` 建立动态 `/32` P2P 路由。
 
-v7.0 已完成从“单 Endpoint 长时间探测”到 **Candidate 列表 + 后台快速路径探测 + 会话隔离安全控制面** 的升级。VPS 中转始终保持可用；只有候选路径产生新的 WireGuard 认证握手后，才安装对应 `/32` 直连路由。
+v7.0 已完成 Candidate 快速探测和 session/nonce 安全控制面；v7.1 在此基础上启用 **PCP -> NAT-PMP -> UPnP 自动 IPv4 端口映射**，优先解决服务器处于对称 NAT 后时 `observed4` 不稳定的问题。
 
 ## 运行结构
 
-- VPS：`peers-api.service`，`10.0.0.1:8899`，负责 session、候选汇聚、`/offer`/`/remove` 协调。
-- GPU、2696：`wireguard-p2p-agent.service`，分别监听 `10.0.0.2:8898`、`10.0.0.5:8898`。
-- Windows：`wireguard-p2p.exe`，负责候选上报、路径探测和 `/32` 路由升级。
-- 手机 `10.0.0.8`：固定 VPS 中转，不参与 P2P。
+- VPS：`peers-api.service`，`10.0.0.1:8899`，负责 session、候选汇聚和协调。
+- GPU、2696：`wireguard-p2p-agent.service`，负责候选探测与 `/32` 路由升级。
+- GPU、2696 v7.1：`wireguard-p2p-portmap.service`，后台维护 WireGuard UDP 映射。
+- Windows：`wireguard-p2p.exe`，负责候选上报与客户端侧路径探测。
+- 手机 `10.0.0.8`：固定 VPS 中转。
 
-## Candidate 类型
+## Candidate 优先级
 
 ```text
 lan4       1000   同局域网私有 IPv4
 host6       900   公网可路由 IPv6
-mapped4     800   PCP/NAT-PMP/UPnP（v7.1 预留）
-observed4   600   VPS 从 WireGuard 实际观察到的公网 IPv4
+mapped4     800   PCP/NAT-PMP/UPnP 显式映射
+observed4   600   VPS 观察到的公网 IPv4 NAT Endpoint
 predicted4  400   对称 NAT 预测端口（v7.2 预留）
 ```
 
-Windows 和 Linux Agent 自动上报 `lan4` 与可用 `host6`。VPS 根据 `wg show wg0 dump` 生成可信 `observed4`，节点不能自行声明 `observed4`。IPv6 Endpoint 统一使用 `[IPv6]:port`。
+路径失败时 VPS `/24` 始终继续工作。
 
-协议文档：
+## v7.1 mapped4
 
-- `docs/protocol-v7.md`：v7.0 正式协议
-- `docs/protocol-v7-beta.md`：快速探测阶段历史文档
-- `docs/protocol-v7-alpha.md`：Candidate 交换阶段历史文档
-
-## 路径选择
+服务器后台服务按以下顺序尝试：
 
 ```text
-同 NAT / 同 LAN：lan4
-                  ↓
-              host6 IPv6
-                  ↓
-              mapped4（v7.1）
-                  ↓
-              observed4 IPv4 打洞
-                  ↓
-              predicted4（v7.2）
-
-任何阶段失败：VPS /24 路由始终仍可用
+PCP -> NAT-PMP -> UPnP-IGD
 ```
 
-远端 `lan4` 只有在两端被 VPS 观察为同一公网 IPv4/NAT 时才会尝试，避免把不可路由的私网地址当作互联网候选。
+成功后把路由器建立的：
 
-Windows 在本机没有公网 IPv6 能力时会跳过远端 `host6`。Linux 候选模块也已具备 `allow_ipv6` 过滤能力；当前 Agent 在少数本机无 IPv6 的环境中仍可能额外花约 2 秒尝试一个 `host6`，但不会影响 VPS 回退。
+```text
+公网IPv4:外部UDP端口 -> 服务器LAN_IP:WireGuardListenPort
+```
+
+写入：
+
+```text
+/var/lib/wireguard-p2p/mapped4.json
+```
+
+Agent 的 `gather_candidates()` 只读取与当前 LAN IPv4、WireGuard ListenPort 和租期完全匹配的缓存，然后发布：
+
+```json
+{
+  "type": "mapped4",
+  "family": "udp4",
+  "endpoint": "PUBLIC_IP:PORT",
+  "priority": 800
+}
+```
+
+如果返回的是 RFC1918、CGNAT `100.64.0.0/10` 或其他非公网 IPv4，则不会发布。
+
+映射失败不会影响 Agent、IPv6、observed4 或 VPS relay。
+
+### 为什么服务器侧映射优先
+
+当前困难 NAT 位于 GPU/2696 所在网络。只要服务器获得稳定 `mapped4`，Windows 客户端主动向该地址发 WireGuard 握手即可；Windows 本身不需要拥有端口映射。因此 v7.1 首先实现服务器侧映射。
+
+## v7.1 部署
+
+在 GPU 和 2696 更新仓库后，进入：
+
+```bash
+cd p2p/wireguard-p2p/linux
+sudo sh install_portmap.sh
+```
+
+脚本会自动识别现有 Agent 的服务用户，安装：
+
+```text
+/opt/wireguard-p2p/portmap.py
+/opt/wireguard-p2p/portmap_daemon.py
+/opt/wireguard-p2p/candidates.py
+/etc/systemd/system/wireguard-p2p-portmap.service
+```
+
+并启用新服务、重启 Agent。
+
+若自动识别用户失败：
+
+```bash
+sudo sh install_portmap.sh <service-user>
+```
+
+诊断：
+
+```bash
+systemctl status wireguard-p2p-portmap.service
+journalctl -u wireguard-p2p-portmap.service -n 50 --no-pager
+cat /var/lib/wireguard-p2p/mapped4.json
+```
+
+如果路由器支持其中任一协议，应看到类似：
+
+```json
+{
+  "method": "pcp",
+  "internal_ip": "192.168.0.134",
+  "internal_port": 35422,
+  "candidate": {
+    "type": "mapped4",
+    "endpoint": "211.71.91.89:35422"
+  }
+}
+```
+
+没有该文件只说明自动端口映射未成功，原有 P2P 和 VPS fallback 不受影响。
 
 ## 快速探测状态机
 
-每个候选默认探测约 2 秒，最多选择 5 个候选，因此一次完整候选轮换通常不超过约 10 秒。
+每个候选默认约 2 秒，最多选择 5 个。
 
 探测阶段：
 
 ```text
 PersistentKeepalive = 1
-AllowedIPs 不添加目标 /32
-真实流量继续走 VPS
+不安装目标 /32
+业务流量继续走 VPS
 ```
 
-成功要求产生新的认证握手：
+成功必须满足：
 
 ```text
-latest_handshake > candidate 安装前记录的 baseline_handshake
+latest_handshake > candidate 安装前 baseline_handshake
 ```
 
 成功后：
 
 ```text
-读取 WireGuard 实际学习到的 Endpoint
+读取 WireGuard 实际 Endpoint
 添加目标 10.0.0.x/32
 PersistentKeepalive = 25
 ```
 
-全部候选失败后删除动态 Peer，继续使用 VPS，并进入：
+全部失败后删除动态 Peer，继续走 VPS；退避为 60 秒、120 秒、随后 30 分钟。Candidate 变化会解除旧冷却并重新评估。
 
-```text
-第 1 次失败：60 秒
-第 2 次失败：120 秒
-第 3 次及以后：30 分钟
-```
+## v7.0 控制面安全
 
-Candidate 列表、IPv6 地址或公网 Endpoint 变化会立即解除旧冷却并重新评估。
-
-## Relay-first 不变量
-
-```text
-VPS /24 始终可用
-       |
-       +-- 后台 candidate probe
-               |
-               +-- 新认证握手成功 -> 添加 /32
-               |
-               +-- 失败/失效 -> 删除动态 Peer -> VPS
-```
-
-**没有新的认证直连握手，就不会创建动态 `/32`。**
-
-因此候选探测、版本升级或控制面异常都不会切断 VPS 中转通路。
-
-## v7.0 会话安全
-
-VPS 为每个客户端连接创建：
+每个客户端会话包含：
 
 ```text
 session_id         UUIDv4
-session_started_ns 单调用于比较的新会话创建时间
+session_started_ns 单调比较的新会话创建时间
 ```
 
-两者随 `/offer` 下发并由 Linux Agent 保存。
+旧 `/offer` 无法覆盖新 session；`/remove` 必须匹配 `peer_key + peer_ip + session_id`。
 
-### 防止旧 offer 覆盖新会话
-
-如果一个迟到的 `/offer` 携带不同 `session_id`，且 `session_started_ns` 不新于当前状态，Agent 会直接忽略。
-
-### `/remove` 与 session 绑定
-
-`/remove` 必须同时匹配：
+VPS -> Agent 使用：
 
 ```text
-peer_key
-peer_ip
-session_id
+HMAC-SHA256(
+  METHOD\nPATH\nTIMESTAMP\nNONCE\nBODY
+)
 ```
 
-旧 session 的迟到 `/remove` 返回 `removed=false`，不能删除新 session 的动态 Peer。
-
-### nonce 防重放
-
-VPS -> Agent 的 `/offer`、`/remove` 使用 HMAC-SHA256，签名内容为：
-
-```text
-METHOD\nPATH\nTIMESTAMP\nNONCE\nBODY
-```
-
-其中：
-
-```text
-nonce：128 bit 随机值
-时间窗口：±30 秒
-nonce 缓存：60 秒
-最大 nonce 缓存：4096
-```
-
-同一个合法请求即使在 30 秒窗口内再次发送，也会因为 nonce 已使用而被拒绝。
-
-`/health` 会返回：
-
-```text
-security: session-nonce-v1
-```
-
-Agent 还会显示当前 `nonce_cache` 数量。
+nonce 为 128 bit 随机值，时间窗口 ±30 秒，已使用 nonce 缓存 60 秒，防止合法请求在窗口内重放。
 
 ## 直连健康检查
 
-已建立直连后，WireGuard 握手超过 180 秒未更新时：
+直连握手超过 180 秒未更新：
 
 1. 删除动态 `/32` Peer；
-2. 流量立即回到 VPS；
-3. 后台重新启动 Candidate 探测。
+2. 流量立即回 VPS；
+3. 后台重新运行 Candidate Probe。
 
-180 秒阈值用于避开 WireGuard 正常约 120 秒 rekey 周期造成的误判。
-
-## Candidate worker 取消机制
-
-Windows 与 Linux 状态机均维护 generation。候选变化、直连失效、Peer 删除、session 替换或程序退出会使旧 generation 失效，后台 worker 检测到后立即停止，避免旧网络上的探测结果覆盖新状态。
-
-## 升级兼容
-
-v7 继续保留：
+## 协议文档
 
 ```text
-endpoint
-endpoint_type
-lan_endpoint
-lan_ip
-listen_port
+docs/protocol-v7.md       v7.0 正式 Candidate/session/security 协议
+docs/protocol-v7.1.md     v7.1 mapped4 端口映射
+docs/protocol-v7-beta.md  历史快速探测设计
+docs/protocol-v7-alpha.md 历史 Candidate 交换设计
 ```
 
-`candidates[]` 是增量字段。
-
-从 v7.0-beta 升级到 v7.0 时，VPS-Agent HMAC 格式增加了 `method/path/nonce`，因此在所有节点完成升级前，旧/新控制面之间可能暂时无法建立新的 P2P 动态 Peer；**VPS `/24` 中转不受影响**。建议在同一维护窗口升级 VPS 与两台 Linux Agent，Windows 客户端可随后升级。
-
-## 日志与诊断
-
-Linux Agent 默认保持安静，只记录异常；临时诊断：
-
-```bash
-P2P_VERBOSE_LOG=1
-systemctl restart wireguard-p2p-agent.service
-journalctl -u wireguard-p2p-agent.service -f
-```
-
-VPS：
-
-```bash
-systemctl status peers-api.service
-curl --noproxy '*' http://10.0.0.1:8899/health
-```
-
-## 文件结构
+## 主要文件
 
 ```text
 wireguard-p2p/
 ├── docs/
 │   ├── protocol-v7.md
-│   ├── protocol-v7-alpha.md
-│   └── protocol-v7-beta.md
+│   └── protocol-v7.1.md
 ├── linux/
 │   ├── candidates.py
 │   ├── p2p_agent.py
-│   └── wireguard-p2p-agent.service
+│   ├── portmap.py
+│   ├── portmap_daemon.py
+│   ├── install_portmap.sh
+│   ├── wireguard-p2p-agent.service
+│   └── wireguard-p2p-portmap.service
 ├── tests/
 │   ├── test_peer_logic.py
 │   ├── test_protocol_v7.py
-│   └── test_security_v7.py
+│   ├── test_security_v7.py
+│   └── test_portmap_v7.py
 └── vps/
-    ├── peers_api.py
-    └── peers-api.service
-
-wireguard-p2p-exe/
-├── candidate.go
-├── candidate_test.go
-├── probe.go
-├── main.go
-└── main_test.go
+    └── peers_api.py
 ```
 
-`.github/workflows/v7-tests.yml` 会在 `main` 每次提交后自动运行 Python 与 Go 测试。
+GitHub Actions 在 `main` 每次提交后运行 Python 与 Go 测试。
 
 ## 回滚点
 
@@ -238,22 +211,20 @@ wireguard-p2p-exe/
 backup/pre-v7-alpha-20260807
 backup/pre-v7-beta-20260807
 backup/pre-v7-stable-20260807
+backup/pre-v7.1-20260807
 ```
 
 ## 后续路线
 
 ```text
-v7.0.1
+v7.1.x
+  实网验证 PCP/NAT-PMP/UPnP
+  可选 Windows 侧 mapped4
   Linux host6 本地能力过滤收尾
-  实网路径统计与重评估
-
-v7.1
-  PCP -> NAT-PMP -> UPnP
-  mapped4 映射续期与健康检查
 
 v7.2
   NAT 行为探测
-  仅在端口分配可预测时生成 predicted4
+  仅对端口分配可预测的 NAT 生成 predicted4
 
 v8（如确有需要）
   userspace WireGuard + UDP mux / ICE
