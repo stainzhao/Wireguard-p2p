@@ -19,13 +19,14 @@ import (
 )
 
 const (
-	version          = "7.3.0"
+	version          = "7.4.0"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
 	directMaxAge     = 3 * time.Minute
 	failureCooldown  = 30 * time.Minute
 	activeInterval   = 15 * time.Second
+	stableInterval   = 60 * time.Second
 	inactiveInterval = 3 * time.Second
 	maxFailureDelay  = 60 * time.Second
 	errorLogInterval = 5 * time.Minute
@@ -83,6 +84,7 @@ type app struct {
 	lastErrorLog       time.Time
 	failureDelay       time.Duration
 	nextSyncAttempt    time.Time
+	coordinatorVersion string
 	mu                 sync.Mutex
 	wgMu               sync.Mutex
 }
@@ -161,7 +163,7 @@ func main() {
 
 		if time.Now().Before(a.nextSyncAttempt) {
 			a.fallbackStaleDirects()
-			next = activeInterval
+			next = a.loopInterval()
 			continue
 		}
 		if err := a.syncOnce(); err != nil {
@@ -170,7 +172,7 @@ func main() {
 		} else {
 			a.reportSyncRecovered()
 		}
-		next = activeInterval
+		next = a.loopInterval()
 	}
 }
 
@@ -218,6 +220,52 @@ func (a *app) reportSyncRecovered() {
 	a.lastErrorLog = time.Time{}
 	a.failureDelay = 0
 	a.nextSyncAttempt = time.Time{}
+}
+
+func coordinatorSupportsDirectIndependence(value string) bool {
+	parts := strings.Split(value, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	major, errMajor := strconv.Atoi(parts[0])
+	minor, errMinor := strconv.Atoi(parts[1])
+	if errMajor != nil || errMinor != nil {
+		return false
+	}
+	return major > 7 || (major == 7 && minor >= 4)
+}
+
+func (a *app) stableDirectsHealthy() bool {
+	if !coordinatorSupportsDirectIndependence(a.coordinatorVersion) {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	hasState := false
+	for _, state := range a.states {
+		if state == nil {
+			continue
+		}
+		hasState = true
+		if state.Mode != "direct" || state.WorkerRunning {
+			return false
+		}
+	}
+	return hasState
+}
+
+func (a *app) loopInterval() time.Duration {
+	interval := activeInterval
+	if a.stableDirectsHealthy() {
+		interval = stableInterval
+	}
+	if !a.nextSyncAttempt.IsZero() {
+		until := time.Until(a.nextSyncAttempt)
+		if until > 0 && until < interval {
+			return until
+		}
+	}
+	return interval
 }
 
 func (a *app) wg(args ...string) (string, error) {
@@ -396,9 +444,11 @@ func (a *app) apiSync(lanIP string, listenPort int, candidates []Candidate) ([]a
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
+		a.coordinatorVersion = result.Version
 		return result.Peers, nil
 	}
 
+	a.coordinatorVersion = ""
 	if err := a.apiPost("/announce", payload, nil); err != nil {
 		return nil, err
 	}

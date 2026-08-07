@@ -20,7 +20,7 @@ agent = load_module("p2p_agent_fast_punch", LINUX / "p2p_agent.py")
 
 class FastPunchTests(unittest.TestCase):
     def test_version_marks_fast_ipv6_release(self):
-        self.assertEqual(agent.VERSION, "7.3.0")
+        self.assertEqual(agent.VERSION, "7.4.0")
 
     def test_confirmation_rekey_only_for_nat66_server_to_host6(self):
         original = agent.global_ipv6_addresses

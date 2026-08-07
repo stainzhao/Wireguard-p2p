@@ -21,8 +21,8 @@ api = load_module("api_v73", ROOT / "vps" / "peers_api.py")
 
 class IPv6SimultaneousPunchTests(unittest.TestCase):
     def test_versions_are_v73(self):
-        self.assertEqual(agent.VERSION, "7.3.0")
-        self.assertEqual(api.VERSION, "7.3.0")
+        self.assertEqual(agent.VERSION, "7.4.0")
+        self.assertEqual(api.VERSION, "7.4.0")
 
     def test_reflexive6_candidate_uses_wireguard_port(self):
         candidate = candidates.reflexive6_candidate(

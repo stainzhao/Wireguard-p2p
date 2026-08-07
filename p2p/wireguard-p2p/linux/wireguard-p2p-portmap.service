@@ -12,7 +12,7 @@ ExecStart=/usr/bin/python3 /opt/wireguard-p2p/portmap_daemon.py
 Restart=always
 RestartSec=5
 TimeoutStopSec=10
-StateDirectory=wireguard-p2p
+RuntimeDirectory=wireguard-p2p
 UMask=0077
 
 AmbientCapabilities=CAP_NET_ADMIN

@@ -28,17 +28,18 @@ from candidates import (
     candidate_type_for_endpoint,
     gather_candidates,
     global_ipv6_addresses,
+    observed_type_for_endpoint,
     reflexive6_candidate,
     select_probe_candidates,
     usable_global_ipv6,
 )
 
-VERSION = "7.3.0"
+VERSION = "7.4.0"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
 VPS_ADDRESS = "10.0.0.1"
-STATE_FILE = os.environ.get("P2P_STATE_FILE", "/var/lib/wireguard-p2p/state.json")
+STATE_FILE = os.environ.get("P2P_STATE_FILE", "/run/wireguard-p2p/state.json")
 LOCK_FILE = os.environ.get("P2P_LOCK_FILE", "/run/wireguard-p2p/agent.lock")
 NOTIFY_KEY_FILE = os.environ.get("P2P_NOTIFY_KEY_FILE", "/etc/wireguard-p2p/notify.key")
 KEEPALIVE = 25
@@ -49,8 +50,11 @@ PROBE_POLL_INTERVAL = 0.25
 CONFIRMATION_REKEY_DELAY = 3.0
 CONFIRMATION_REKEY_WINDOW = 8.0
 SIMULTANEOUS_IPV6_WINDOW = 8.0
-REFLEXIVE6_TTL = 600
-REFLEXIVE6_REFRESH_INTERVAL = 300
+ACTIVE_MONITOR_INTERVAL = 5
+DIRECT_MONITOR_INTERVAL = 30
+IDLE_MONITOR_INTERVAL = 60
+REFLEXIVE6_TTL = 1800
+REFLEXIVE6_REFRESH_INTERVAL = 600
 REFLEXIVE6_DISCOVERY_TIMEOUT = 1.5
 REFLEXIVE6_DISCOVERY_URLS = (
     "https://api6.ipify.org",
@@ -423,6 +427,18 @@ def reflexive6_loop():
         refresh_reflexive_ipv6()
 
 
+def direct_peer_healthy(local, peer_ip, now=None):
+    if not local or not peer_ip:
+        return False
+    now = time.time() if now is None else float(now)
+    latest = int(local.get("latest_handshake", 0) or 0)
+    return bool(
+        peer_ip + "/32" in local.get("allowed_ips", [])
+        and latest
+        and now - latest <= DIRECT_MAX_AGE
+    )
+
+
 def candidate_probe_window(candidate):
     if (
         isinstance(candidate, dict)
@@ -778,6 +794,7 @@ def new_peer_state(peer_ip, session_id, session_started_ns):
         "retry_after": 0,
         "generation": 1,
         "worker_running": False,
+        "control_expired": False,
     }
 
 
@@ -818,13 +835,20 @@ def handle_offer(data):
                     "ignored": True,
                     "reason": "stale_session",
                 }
+            preserve_direct = direct_peer_healthy(local, peer_ip, now)
             state["generation"] = int(state.get("generation", 0)) + 1
             state["worker_running"] = False
-            if local:
-                wg_set("peer", key, "remove")
-                local = None
-            state = new_peer_state(peer_ip, session_id, session_started_ns)
-            STATES[key] = state
+            if not preserve_direct:
+                if local:
+                    wg_set("peer", key, "remove")
+                    local = None
+                state = new_peer_state(peer_ip, session_id, session_started_ns)
+                STATES[key] = state
+            else:
+                state["mode"] = "direct"
+                state["endpoint"] = local.get("endpoint", "")
+                state["failures"] = 0
+                state["retry_after"] = 0
         elif state is None:
             state = new_peer_state(peer_ip, session_id, session_started_ns)
             STATES[key] = state
@@ -837,6 +861,7 @@ def handle_offer(data):
         state["session_id"] = session_id
         state["ip"] = peer_ip
         state["lease_expires"] = lease_expires
+        state["control_expired"] = False
         direct = bool(
             local and peer_ip + "/32" in local.get("allowed_ips", [])
         )
@@ -854,15 +879,22 @@ def handle_offer(data):
                 direct
                 and local.get("latest_handshake")
                 and now - local["latest_handshake"] <= DIRECT_MAX_AGE
-                and candidate_endpoint_exists(
-                    candidates, local.get("endpoint", "")
+                and (
+                    candidate_endpoint_exists(
+                        candidates, local.get("endpoint", "")
+                    )
+                    or observed_type_for_endpoint(local.get("endpoint", "")) == "observed6"
                 )
             ):
                 state.update({
                     "mode": "direct",
                     "endpoint": local.get("endpoint", ""),
-                    "selected_type": candidate_type_for_endpoint(
-                        candidates, local.get("endpoint", "")
+                    "selected_type": (
+                        candidate_type_for_endpoint(
+                            candidates, local.get("endpoint", "")
+                        )
+                        or observed_type_for_endpoint(local.get("endpoint", ""))
+                        or state.get("selected_type", "")
                     ),
                 })
                 save_state()
@@ -883,6 +915,13 @@ def handle_offer(data):
             if latest and now - latest <= DIRECT_MAX_AGE:
                 state["mode"] = "direct"
                 state["endpoint"] = local.get("endpoint", "")
+                if not state.get("selected_type"):
+                    state["selected_type"] = (
+                        candidate_type_for_endpoint(
+                            candidates, local.get("endpoint", "")
+                        )
+                        or observed_type_for_endpoint(local.get("endpoint", ""))
+                    )
                 state["worker_running"] = False
                 save_state()
             else:
@@ -935,6 +974,9 @@ def handle_remove(data):
     key = validate_public_key(data["peer_key"])
     peer_ip = validate_peer_ip(data["peer_ip"])
     session_id = validate_session_id(data["session_id"])
+    remove_reason = str(data.get("reason", "disconnect"))
+    if remove_reason not in ("disconnect", "superseded", "expired"):
+        raise ValueError("invalid remove reason")
     with STATE_LOCK:
         state = STATES.get(key)
         if (
@@ -951,18 +993,43 @@ def handle_remove(data):
             }
 
         current = local_wg_peers()
+        local = current.get(key)
+        if remove_reason == "expired" and direct_peer_healthy(local, peer_ip):
+            state["control_expired"] = True
+            state["lease_expires"] = 0
+            state["worker_running"] = False
+            state["mode"] = "direct"
+            state["endpoint"] = local.get("endpoint", "")
+            if not state.get("selected_type"):
+                state["selected_type"] = observed_type_for_endpoint(
+                    local.get("endpoint", "")
+                )
+            save_state()
+            log("control session expired {}; healthy direct preserved".format(peer_ip))
+            return {
+                "ok": True,
+                "version": VERSION,
+                "protocol": 7,
+                "removed": False,
+                "preserved_direct": True,
+                "reason": "control_expired",
+            }
+
         if key in current:
             wg_set("peer", key, "remove")
         state["generation"] = int(state.get("generation", 0)) + 1
         state["worker_running"] = False
         del STATES[key]
         save_state()
-        log("removed session peer {} ({})".format(peer_ip, session_id))
+        log("removed session peer {} ({}) reason={}".format(
+            peer_ip, session_id, remove_reason
+        ))
     return {
         "ok": True,
         "version": VERSION,
         "protocol": 7,
         "removed": True,
+        "reason": remove_reason,
     }
 
 
@@ -978,15 +1045,29 @@ def monitor_once():
             peer_ip = state.get("ip", "?")
             local = current.get(key)
 
-            if now >= float(state.get("lease_expires", 0)):
-                if local:
-                    wg_set("peer", key, "remove")
-                state["generation"] = int(state.get("generation", 0)) + 1
-                state["worker_running"] = False
-                del STATES[key]
-                log("lease expired {}; peer removed".format(peer_ip))
-                changed = True
-                continue
+            lease_expires = float(state.get("lease_expires", 0) or 0)
+            if (
+                not state.get("control_expired")
+                and lease_expires
+                and now >= lease_expires
+            ):
+                if direct_peer_healthy(local, peer_ip, now):
+                    state["control_expired"] = True
+                    state["lease_expires"] = 0
+                    state["worker_running"] = False
+                    state["mode"] = "direct"
+                    state["endpoint"] = local.get("endpoint", "")
+                    changed = True
+                    log("control lease expired {}; healthy direct preserved".format(peer_ip))
+                else:
+                    if local:
+                        wg_set("peer", key, "remove")
+                    state["generation"] = int(state.get("generation", 0)) + 1
+                    state["worker_running"] = False
+                    del STATES[key]
+                    log("lease expired {}; peer removed".format(peer_ip))
+                    changed = True
+                    continue
 
             if state.get("mode") == "confirm6" and state.get("worker_running"):
                 continue
@@ -1002,6 +1083,16 @@ def monitor_once():
                     continue
                 wg_set("peer", key, "remove")
                 state["generation"] = int(state.get("generation", 0)) + 1
+                if state.get("control_expired"):
+                    state["worker_running"] = False
+                    del STATES[key]
+                    changed = True
+                    log(
+                        "fallback {} to VPS; direct stale while coordinator unavailable".format(
+                            peer_ip
+                        )
+                    )
+                    continue
                 state.update({
                     "mode": "idle",
                     "endpoint": "",
@@ -1043,10 +1134,22 @@ def monitor_once():
         launch_probe(key, generation)
 
 
+def monitor_interval():
+    with STATE_LOCK:
+        if not STATES:
+            return IDLE_MONITOR_INTERVAL
+        if all(
+            item.get("mode") == "direct" and not item.get("worker_running")
+            for item in STATES.values()
+        ):
+            return DIRECT_MONITOR_INTERVAL
+    return ACTIVE_MONITOR_INTERVAL
+
+
 def monitor_loop():
     last_error = ""
     last_error_time = 0
-    while not STOP.wait(5):
+    while not STOP.wait(monitor_interval()):
         try:
             monitor_once()
             if last_error:

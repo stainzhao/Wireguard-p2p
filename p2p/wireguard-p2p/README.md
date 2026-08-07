@@ -1,8 +1,21 @@
-# WireGuard P2P v7.3
+# WireGuard P2P v7.4
 
 该项目在保留 VPS `10.0.0.1` 中转路由的同时，为 Windows 客户端与 GPU `10.0.0.2`、2696 `10.0.0.5` 建立动态 `/32` P2P 路由。
 
-v7.0 完成 Candidate 快速探测和 session/nonce 安全控制面；v7.1 加入 **PCP -> NAT-PMP -> UPnP 自动 IPv4 端口映射**；v7.2 完成 NAT66 `observed6` 被动学习与 confirmation rekey；v7.3 新增 **reflexive6 + 双向 simultaneous IPv6 punch**，用于客户端和服务器两侧都存在 IPv6 stateful firewall/NAT66 的场景。
+v7.0 完成 Candidate 快速探测和 session/nonce 安全控制面；v7.1 加入 **PCP -> NAT-PMP -> UPnP 自动 IPv4 端口映射**；v7.2 完成 NAT66 `observed6` 被动学习与 confirmation rekey；v7.3 新增 **reflexive6 + 双向 simultaneous IPv6 punch**；v7.4 在保持 VPS `/24` relay 不变的前提下加入 **低资源稳定态 + Direct/control lease 解耦**。
+
+## v7.4 connectivity-first runtime
+
+- `AllowedIPs = 10.0.0.0/24` 的 VPS relay 基线保持不变，任何优化不得以牺牲连通性为代价。
+- Windows 在发现/恢复阶段保持 15 秒控制同步；确认协调器 >=7.4 且当前活动服务器全部 direct 后降到 60 秒。
+- Linux Agent 在探测/恢复阶段每 5 秒检查；稳定 direct 为 30 秒；没有 session 时为 60 秒。
+- VPS control session 过期只撤销控制权限；若 WireGuard `/32` direct 仍有 180 秒内的新握手，保留 direct。显式 `/disconnect` 或 superseded session 仍立即删除动态 peer。
+- VPS 重启产生新 session 时，若已有 direct 仍健康，Linux 不删除/recreate WireGuard peer。
+- `state.json` 与 `mapped4.json` 移到 `/run/wireguard-p2p/`，不再作为 SSD 持久状态。
+- mapped4 后台检查降到 60 秒，并且只在映射建立、续租、变化或失效时写状态。
+- v7.3 已验证的 simultaneous IPv6 punch、candidate 优先级和 `PersistentKeepalive=25` 保持不变。
+
+完整设计见 `docs/protocol-v7.4.md`。
 
 ## 运行结构
 
@@ -57,7 +70,7 @@ PCP -> NAT-PMP -> UPnP-IGD
 写入：
 
 ```text
-/var/lib/wireguard-p2p/mapped4.json
+/run/wireguard-p2p/mapped4.json
 ```
 
 Agent 的 `gather_candidates()` 只读取与当前 LAN IPv4、WireGuard ListenPort 和租期完全匹配的缓存，然后发布：
@@ -110,7 +123,7 @@ sudo sh install_portmap.sh <service-user>
 ```bash
 systemctl status wireguard-p2p-portmap.service
 journalctl -u wireguard-p2p-portmap.service -n 50 --no-pager
-cat /var/lib/wireguard-p2p/mapped4.json
+cat /run/wireguard-p2p/mapped4.json
 ```
 
 如果路由器支持其中任一协议，应看到类似：

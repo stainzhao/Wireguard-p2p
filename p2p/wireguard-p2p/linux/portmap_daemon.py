@@ -15,9 +15,9 @@ from portmap import PortMapper
 
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 STATE_FILE = os.environ.get(
-    "P2P_PORTMAP_STATE_FILE", "/var/lib/wireguard-p2p/mapped4.json"
+    "P2P_PORTMAP_STATE_FILE", "/run/wireguard-p2p/mapped4.json"
 )
-POLL_INTERVAL = int(os.environ.get("P2P_PORTMAP_POLL", "15"))
+POLL_INTERVAL = int(os.environ.get("P2P_PORTMAP_POLL", "60"))
 STOP = threading.Event()
 
 
@@ -94,23 +94,39 @@ def main():
     signal.signal(signal.SIGTERM, stop_handler)
     signal.signal(signal.SIGINT, stop_handler)
     mapper = PortMapper()
+    last_written = None
 
     while not STOP.is_set():
         ip = local_ipv4()
         port = listen_port()
         candidate = None
+        refreshed = False
         if ip and port:
             candidate = mapper.current_candidate(port, ip)
             if mapper.should_refresh(port, ip):
-                refreshed = mapper.refresh(port, ip)
-                if refreshed:
-                    candidate = refreshed
+                refreshed_candidate = mapper.refresh(port, ip)
+                if refreshed_candidate:
+                    candidate = refreshed_candidate
+                    refreshed = True
             if candidate:
-                write_state(candidate, ip, port, mapper.status())
+                status = mapper.status()
+                identity = (
+                    ip,
+                    int(port),
+                    status.get("method", ""),
+                    candidate.get("endpoint", ""),
+                )
+                if refreshed or identity != last_written or not os.path.exists(STATE_FILE):
+                    write_state(candidate, ip, port, status)
+                    last_written = identity
             else:
-                clear_state()
+                if last_written is not None or os.path.exists(STATE_FILE):
+                    clear_state()
+                last_written = None
         else:
-            clear_state()
+            if last_written is not None or os.path.exists(STATE_FILE):
+                clear_state()
+            last_written = None
         STOP.wait(POLL_INTERVAL)
 
     clear_state()

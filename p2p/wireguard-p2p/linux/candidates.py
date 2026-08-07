@@ -18,7 +18,7 @@ PRIORITY = {
 }
 MAX_PROBE_CANDIDATES = 5
 PORTMAP_STATE_FILE = os.environ.get(
-    "P2P_PORTMAP_STATE_FILE", "/var/lib/wireguard-p2p/mapped4.json"
+    "P2P_PORTMAP_STATE_FILE", "/run/wireguard-p2p/mapped4.json"
 )
 NON_HOST_IPV6_NETWORKS = tuple(
     ipaddress.ip_network(value)

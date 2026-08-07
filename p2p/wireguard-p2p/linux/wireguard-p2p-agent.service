@@ -13,7 +13,6 @@ ExecStart=/usr/bin/python3 /opt/wireguard-p2p/p2p_agent.py
 Restart=always
 RestartSec=5
 TimeoutStopSec=10
-StateDirectory=wireguard-p2p
 RuntimeDirectory=wireguard-p2p
 UMask=0077
 

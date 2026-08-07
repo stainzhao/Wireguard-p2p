@@ -16,13 +16,13 @@ import time
 import urllib.request
 import uuid
 
-VERSION = "7.3.0"
+VERSION = "7.4.0"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
 AGENT_PORT = 8898
-ANNOUNCE_TTL = 150
-SESSION_TTL = 120
-OFFER_REFRESH = 60
+ANNOUNCE_TTL = 300
+SESSION_TTL = 180
+OFFER_REFRESH = 120
 PUSH_TIMEOUT = 2
 MAX_REQUEST_SIZE = 16384
 MAX_CANDIDATES = 16
@@ -457,7 +457,7 @@ def coordinate_client(client, client_lan_endpoint, peers, client_candidates=None
             fingerprints = dict(session.get("fingerprints", {}))
 
         if stale_session and stale_session.get("session_id"):
-            push_remove(stale_session)
+            push_remove(stale_session, reason="superseded")
 
         if is_new_session:
             log("session opened for {} ({})".format(client["ip"], session_id))
@@ -537,7 +537,9 @@ def coordinate_client(client, client_lan_endpoint, peers, client_candidates=None
         return session_id
 
 
-def push_remove(session):
+def push_remove(session, reason="disconnect"):
+    if reason not in ("disconnect", "superseded", "expired"):
+        raise ValueError("invalid remove reason")
     session_id = session.get("session_id", "")
     if not session_id:
         return
@@ -545,6 +547,7 @@ def push_remove(session):
         "session_id": session_id,
         "peer_key": session["key"],
         "peer_ip": session["ip"],
+        "reason": reason,
     }
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_map = {
@@ -597,7 +600,7 @@ def session_reaper():
             log("session expired for {} ({})".format(
                 session["ip"], session.get("session_id", "legacy")
             ))
-            push_remove(session)
+            push_remove(session, reason="expired")
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
