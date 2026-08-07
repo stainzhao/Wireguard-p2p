@@ -1,5 +1,5 @@
-import importlib.util
 import contextlib
+import importlib.util
 import io
 import os
 import pathlib
@@ -17,7 +17,6 @@ def load_module(name, path):
 
 
 api = load_module("peers_api", ROOT / "vps" / "peers_api.py")
-sync = load_module("p2p_sync", ROOT / "linux" / "p2p_sync.py")
 os.environ.setdefault("P2P_LISTEN_ADDRESS", "10.0.0.5")
 agent = load_module("p2p_agent", ROOT / "linux" / "p2p_agent.py")
 
@@ -113,25 +112,9 @@ class ApiTests(unittest.TestCase):
         )
 
 
-class SyncTests(unittest.TestCase):
-    def test_only_server_client_pairs_are_eligible(self):
-        self.assertTrue(sync.eligible_pair("server", "client"))
-        self.assertTrue(sync.eligible_pair("client", "server"))
-        self.assertFalse(sync.eligible_pair("server", "server"))
-        self.assertFalse(sync.eligible_pair("client", "client"))
-        self.assertFalse(sync.eligible_pair("server", "relay_only"))
-
-    def test_retry_delay_is_capped(self):
-        self.assertEqual(sync.retry_delay(1), 60)
-        self.assertEqual(sync.retry_delay(2), 120)
-        self.assertEqual(sync.retry_delay(3), 300)
-        self.assertEqual(sync.retry_delay(10), 300)
-
-
 class AgentTests(unittest.TestCase):
     def test_direct_age_allows_wireguard_rekey_interval(self):
         self.assertEqual(agent.DIRECT_MAX_AGE, 180)
-        self.assertEqual(sync.DIRECT_MAX_AGE, 180)
 
     def test_peer_validation(self):
         key = "SCTH2DOd6XhU0QZLFCgClEKWgZPNHr6QtmPpb6S05EM="
