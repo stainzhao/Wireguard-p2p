@@ -1,0 +1,264 @@
+name: apply v7.2.2 confirmation rekey
+
+on:
+  push:
+    branches: ['tmp/v7.2.2-confirmation-rekey-final8']
+    paths:
+      - '.github/workflows/apply-v7.2.2-confirmation.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: p2p/wireguard-p2p-exe/go.mod
+          cache-dependency-path: p2p/wireguard-p2p-exe/go.mod
+      - name: Apply confirmation rekey patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              if old not in text:
+                  raise SystemExit(f'expected source fragment not found in {path}: {old[:80]!r}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          agent = 'p2p/wireguard-p2p/linux/p2p_agent.py'
+          replace(
+              agent,
+              '    gather_candidates,\n    select_probe_candidates,\n)',
+              '    gather_candidates,\n    global_ipv6_addresses,\n    select_probe_candidates,\n)',
+          )
+          replace(agent, 'VERSION = "7.2.1"', 'VERSION = "7.2.2"')
+          replace(
+              agent,
+              'PROBE_POLL_INTERVAL = 0.25\nRETRY_DELAYS = (3, 10)',
+              'PROBE_POLL_INTERVAL = 0.25\nCONFIRMATION_REKEY_DELAY = 3.0\nCONFIRMATION_REKEY_WINDOW = 8.0\nRETRY_DELAYS = (3, 10)',
+          )
+
+          helper = r'''
+
+def should_confirmation_rekey(candidate):
+    return bool(
+        isinstance(candidate, dict)
+        and candidate.get("type") == "host6"
+        and not global_ipv6_addresses()
+    )
+
+
+def trigger_overlay_packet(peer_ip):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(b"\x00", (peer_ip, 9))
+    except OSError:
+        pass
+    finally:
+        sock.close()
+
+
+def confirmation_rekey_worker(key, generation, peer_ip, endpoint):
+    if STOP.wait(CONFIRMATION_REKEY_DELAY):
+        return
+
+    with STATE_LOCK:
+        state = STATES.get(key)
+        if (
+            not state
+            or state.get("generation") != generation
+            or state.get("mode") != "direct"
+            or state.get("endpoint") != endpoint
+        ):
+            return
+        state["mode"] = "confirm6"
+        state["worker_running"] = True
+        state["started"] = time.time()
+        state["baseline_handshake"] = 0
+        try:
+            wg_set("peer", key, "remove")
+            wg_set(
+                "peer",
+                key,
+                "allowed-ips",
+                peer_ip + "/32",
+                "endpoint",
+                endpoint,
+                "persistent-keepalive",
+                str(PROBE_KEEPALIVE),
+            )
+        except Exception as exc:
+            try:
+                wg_set("peer", key, "remove")
+            except Exception:
+                pass
+            failures = int(state.get("failures", 0)) + 1
+            delay = retry_delay(failures)
+            state.update({
+                "mode": "idle",
+                "endpoint": "",
+                "endpoint_type": "",
+                "selected_type": "",
+                "failures": failures,
+                "retry_after": time.time() + delay,
+                "worker_running": False,
+                "started": 0,
+                "baseline_handshake": 0,
+            })
+            save_state()
+            log_error("IPv6 confirmation rekey setup failed: {}".format(exc))
+            return
+        save_state()
+
+    # A fresh packet to the overlay address forces the newly re-created
+    # WireGuard peer to initiate a new authenticated handshake immediately.
+    trigger_overlay_packet(peer_ip)
+
+    deadline = time.monotonic() + CONFIRMATION_REKEY_WINDOW
+    while time.monotonic() < deadline:
+        if STOP.wait(PROBE_POLL_INTERVAL):
+            return
+        local = local_wg_peers().get(key)
+        latest = int((local or {}).get("latest_handshake", 0) or 0)
+        if not latest or time.time() - latest > 5:
+            continue
+        actual_endpoint = (local or {}).get("endpoint") or endpoint
+        with STATE_LOCK:
+            state = STATES.get(key)
+            if (
+                not state
+                or state.get("generation") != generation
+                or state.get("mode") != "confirm6"
+                or not state.get("worker_running")
+            ):
+                return
+            try:
+                wg_set(
+                    "peer",
+                    key,
+                    "allowed-ips",
+                    peer_ip + "/32",
+                    "endpoint",
+                    actual_endpoint,
+                    "persistent-keepalive",
+                    str(KEEPALIVE),
+                )
+            except Exception as exc:
+                log_error("IPv6 confirmation rekey finalize failed: {}".format(exc))
+                return
+            state.update({
+                "mode": "direct",
+                "endpoint": actual_endpoint,
+                "endpoint_type": "host6",
+                "selected_type": "host6",
+                "failures": 0,
+                "retry_after": 0,
+                "worker_running": False,
+                "started": 0,
+                "baseline_handshake": 0,
+            })
+            save_state()
+        log("IPv6 confirmation rekey OK {} via host6 {}".format(peer_ip, actual_endpoint))
+        return
+
+    with STATE_LOCK:
+        state = STATES.get(key)
+        if (
+            not state
+            or state.get("generation") != generation
+            or state.get("mode") != "confirm6"
+            or not state.get("worker_running")
+        ):
+            return
+        try:
+            wg_set("peer", key, "remove")
+        except Exception:
+            pass
+        failures = int(state.get("failures", 0)) + 1
+        delay = retry_delay(failures)
+        state.update({
+            "mode": "idle",
+            "endpoint": "",
+            "endpoint_type": "",
+            "selected_type": "",
+            "failures": failures,
+            "retry_after": time.time() + delay,
+            "worker_running": False,
+            "started": 0,
+            "baseline_handshake": 0,
+        })
+        save_state()
+    log("IPv6 confirmation rekey failed {}; fallback to VPS; retry in {}s".format(peer_ip, delay))
+
+
+def launch_confirmation_rekey(key, generation, peer_ip, endpoint):
+    thread = threading.Thread(
+        target=confirmation_rekey_worker,
+        args=(key, generation, peer_ip, endpoint),
+        name="confirm6-{}".format(key[:8]),
+    )
+    thread.daemon = True
+    thread.start()
+'''
+          replace(
+              agent,
+              '\ndef probe_generation_current(key, generation):\n',
+              helper + '\n\ndef probe_generation_current(key, generation):\n',
+          )
+
+          old_success = '''            log(\n                "P2P OK {} via {} {}".format(\n                    peer_ip, selected_type, actual_endpoint\n                )\n            )\n            return\n'''
+          new_success = '''            log(\n                "P2P OK {} via {} {}".format(\n                    peer_ip, selected_type, actual_endpoint\n                )\n            )\n            if should_confirmation_rekey(candidate):\n                launch_confirmation_rekey(\n                    key, generation, peer_ip, actual_endpoint\n                )\n            return\n'''
+          replace(agent, old_success, new_success)
+
+          replace(
+              agent,
+              '                changed = True\n                continue\n\n            direct = bool(',
+              '                changed = True\n                continue\n\n            if state.get("mode") == "confirm6" and state.get("worker_running"):\n                continue\n\n            direct = bool(',
+          )
+
+          replace('p2p/wireguard-p2p-exe/main.go', 'version          = "7.2.1"', 'version          = "7.2.2"')
+          replace('p2p/wireguard-p2p/vps/peers_api.py', 'VERSION = "7.2.1"', 'VERSION = "7.2.2"')
+
+          test = Path('p2p/wireguard-p2p/tests/test_fast_punch_v7.py')
+          text = test.read_text(encoding='utf-8')
+          text = text.replace('self.assertEqual(agent.VERSION, "7.2.1")', 'self.assertEqual(agent.VERSION, "7.2.2")')
+          marker = '    def test_retry_schedule_is_fast_then_quiet(self):\n'
+          extra = '''    def test_confirmation_rekey_only_for_nat66_server_to_host6(self):\n        original = agent.global_ipv6_addresses\n        try:\n            agent.global_ipv6_addresses = lambda: []\n            self.assertTrue(agent.should_confirmation_rekey({"type": "host6"}))\n            self.assertFalse(agent.should_confirmation_rekey({"type": "observed4"}))\n            agent.global_ipv6_addresses = lambda: ["2001:4860::1"]\n            self.assertFalse(agent.should_confirmation_rekey({"type": "host6"}))\n        finally:\n            agent.global_ipv6_addresses = original\n\n    def test_confirmation_rekey_window_is_bounded(self):\n        self.assertEqual(agent.CONFIRMATION_REKEY_DELAY, 3.0)\n        self.assertEqual(agent.CONFIRMATION_REKEY_WINDOW, 8.0)\n\n'''
+          if marker not in text:
+              raise SystemExit('test marker not found')
+          text = text.replace(marker, extra + marker, 1)
+          test.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Check diff
+        run: git diff --check
+      - name: Run Python tests
+        run: python -m unittest discover -s p2p/wireguard-p2p/tests -v
+      - name: Run Go tests
+        working-directory: p2p/wireguard-p2p-exe
+        run: go test ./...
+      - name: Build Windows amd64
+        working-directory: p2p/wireguard-p2p-exe
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: go build -trimpath -o /tmp/wireguard-p2p-v7.exe .
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add p2p/wireguard-p2p/linux/p2p_agent.py \
+                  p2p/wireguard-p2p/vps/peers_api.py \
+                  p2p/wireguard-p2p-exe/main.go \
+                  p2p/wireguard-p2p/tests/test_fast_punch_v7.py
+          git commit -m 'fix: force fresh IPv6 handshake after passive arm'
+          git push origin HEAD:tmp/v7.2.2-confirmation-rekey-final8
