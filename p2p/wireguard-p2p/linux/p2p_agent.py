@@ -20,9 +20,15 @@ import time
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
-from candidates import gather_candidates
+from candidates import (
+    candidate_endpoint_exists,
+    candidate_signature,
+    candidate_type_for_endpoint,
+    gather_candidates,
+    select_probe_candidates,
+)
 
-VERSION = "7.0.0-alpha.1"
+VERSION = "7.0.0-beta.1"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
@@ -31,8 +37,10 @@ STATE_FILE = os.environ.get("P2P_STATE_FILE", "/var/lib/wireguard-p2p/state.json
 LOCK_FILE = os.environ.get("P2P_LOCK_FILE", "/run/wireguard-p2p/agent.lock")
 NOTIFY_KEY_FILE = os.environ.get("P2P_NOTIFY_KEY_FILE", "/etc/wireguard-p2p/notify.key")
 KEEPALIVE = 25
+PROBE_KEEPALIVE = 1
 DIRECT_MAX_AGE = 180
-PROBE_TIMEOUT = 90
+CANDIDATE_PROBE_WINDOW = 2.0
+PROBE_POLL_INTERVAL = 0.25
 RETRY_DELAYS = (60, 120)
 FAILURE_COOLDOWN = 1800
 MAX_REQUEST_SIZE = 16384
@@ -104,7 +112,15 @@ def load_state():
         with open(STATE_FILE) as handle:
             state = json.load(handle)
         if isinstance(state, dict):
-            return {key: value for key, value in state.items() if isinstance(value, dict)}
+            result = {key: value for key, value in state.items() if isinstance(value, dict)}
+            for item in result.values():
+                item["worker_running"] = False
+                item["generation"] = int(item.get("generation", 0)) + 1
+                if item.get("mode") == "probe":
+                    item["mode"] = "idle"
+                item["started"] = 0
+                item["baseline_handshake"] = 0
+            return result
     except (OSError, ValueError):
         pass
     return {}
@@ -227,59 +243,213 @@ def retry_delay(failures):
     return FAILURE_COOLDOWN
 
 
-def start_probe(key, state, now):
-    wg_set("peer", key, "endpoint", state["endpoint"],
-           "persistent-keepalive", str(KEEPALIVE))
-    state.update({"mode": "probe", "started": now, "retry_after": 0})
+def probe_generation_current(key, generation):
+    with STATE_LOCK:
+        state = STATES.get(key)
+        return bool(state and state.get("generation") == generation and state.get("worker_running"))
+
+
+def probe_worker(key, generation):
+    with STATE_LOCK:
+        state = STATES.get(key)
+        if not state or state.get("generation") != generation or not state.get("worker_running"):
+            return
+        candidates = list(state.get("candidates", []))
+        peer_ip = state.get("ip", "")
+
+    if not candidates or not peer_ip:
+        with STATE_LOCK:
+            state = STATES.get(key)
+            if state and state.get("generation") == generation:
+                state["worker_running"] = False
+                state["mode"] = "idle"
+                save_state()
+        return
+
+    for candidate in candidates:
+        if not probe_generation_current(key, generation):
+            return
+        local = local_wg_peers().get(key, {})
+        baseline = int(local.get("latest_handshake", 0) or 0)
+
+        with STATE_LOCK:
+            state = STATES.get(key)
+            if not state or state.get("generation") != generation or not state.get("worker_running"):
+                return
+            try:
+                wg_set("peer", key, "endpoint", candidate["endpoint"],
+                       "persistent-keepalive", str(PROBE_KEEPALIVE))
+            except Exception as exc:
+                log_error("probe candidate setup failed: {}".format(exc))
+                continue
+            state.update({
+                "mode": "probe",
+                "endpoint": candidate["endpoint"],
+                "endpoint_type": candidate["type"],
+                "selected_type": candidate["type"],
+                "started": time.time(),
+                "baseline_handshake": baseline,
+            })
+            save_state()
+
+        deadline = time.monotonic() + CANDIDATE_PROBE_WINDOW
+        while time.monotonic() < deadline:
+            if STOP.wait(PROBE_POLL_INTERVAL):
+                return
+            if not probe_generation_current(key, generation):
+                return
+            local = local_wg_peers().get(key)
+            if not local or int(local.get("latest_handshake", 0) or 0) <= baseline:
+                continue
+
+            actual_endpoint = local.get("endpoint") or candidate["endpoint"]
+            with STATE_LOCK:
+                state = STATES.get(key)
+                if not state or state.get("generation") != generation or not state.get("worker_running"):
+                    return
+                selected_type = candidate_type_for_endpoint(state.get("candidates", []), actual_endpoint) or candidate["type"]
+                wg_set("peer", key, "allowed-ips", peer_ip + "/32",
+                       "endpoint", actual_endpoint,
+                       "persistent-keepalive", str(KEEPALIVE))
+                state.update({
+                    "mode": "direct",
+                    "endpoint": actual_endpoint,
+                    "endpoint_type": selected_type,
+                    "selected_type": selected_type,
+                    "promoted": time.time(),
+                    "failures": 0,
+                    "retry_after": 0,
+                    "worker_running": False,
+                    "started": 0,
+                    "baseline_handshake": 0,
+                })
+                save_state()
+            log("P2P OK {} via {} {}".format(peer_ip, selected_type, actual_endpoint))
+            return
+
+    with STATE_LOCK:
+        state = STATES.get(key)
+        if not state or state.get("generation") != generation or not state.get("worker_running"):
+            return
+        try:
+            wg_set("peer", key, "remove")
+        except Exception:
+            pass
+        failures = int(state.get("failures", 0)) + 1
+        delay = retry_delay(failures)
+        state.update({
+            "mode": "idle",
+            "endpoint": "",
+            "endpoint_type": "",
+            "selected_type": "",
+            "failures": failures,
+            "retry_after": time.time() + delay,
+            "worker_running": False,
+            "started": 0,
+            "baseline_handshake": 0,
+        })
+        save_state()
+    log("candidate probe failed {}; retry in {}s".format(peer_ip, delay))
+
+
+def launch_probe(key, generation):
+    thread = threading.Thread(target=probe_worker, args=(key, generation),
+                              name="probe-{}".format(key[:8]))
+    thread.daemon = True
+    thread.start()
 
 
 def handle_offer(data):
     now = time.time()
     key = validate_public_key(data["peer_key"])
     peer_ip = validate_peer_ip(data["peer_ip"])
-    candidates = validate_candidates(data.get("candidates", []))
-    if data.get("endpoint"):
-        endpoint = validate_endpoint(data["endpoint"])
-        endpoint_type = data.get("endpoint_type", "WAN")
-    elif candidates:
-        endpoint = candidates[0]["endpoint"]
-        endpoint_type = candidates[0]["type"]
-    else:
+    advertised = validate_candidates(data.get("candidates", []))
+    legacy_endpoint = validate_endpoint(data["endpoint"]) if data.get("endpoint") else ""
+    endpoint_type = data.get("endpoint_type", "WAN")
+    candidates = select_probe_candidates(advertised, legacy_endpoint, endpoint_type)
+    if not candidates:
         raise ValueError("peer endpoint unavailable")
+    signature = candidate_signature(candidates)
     requested_expiry = float(data.get("lease_expires", now + 120))
     lease_expires = min(max(requested_expiry, now + 30), now + 180)
+    launch = False
+    generation = 0
 
     with STATE_LOCK:
         current = local_wg_peers()
+        local = current.get(key)
         state = STATES.get(key)
-        changed_endpoint = state is None or state.get("endpoint") != endpoint
         if state is None:
             state = {
                 "ip": peer_ip,
                 "mode": "idle",
-                "endpoint": endpoint,
-                "endpoint_type": endpoint_type,
-                "candidates": candidates,
+                "endpoint": "",
+                "endpoint_type": "",
+                "selected_type": "",
+                "candidates": [],
+                "candidate_signature": "",
                 "started": 0,
+                "baseline_handshake": 0,
                 "failures": 0,
                 "retry_after": 0,
+                "generation": 1,
+                "worker_running": False,
             }
             STATES[key] = state
-        state["ip"] = peer_ip
-        state["endpoint_type"] = endpoint_type
-        state["candidates"] = candidates
-        state["lease_expires"] = lease_expires
 
-        if changed_endpoint:
-            if key in current:
+        state["ip"] = peer_ip
+        state["lease_expires"] = lease_expires
+        direct = bool(local and peer_ip + "/32" in local.get("allowed_ips", []))
+        signature_changed = state.get("candidate_signature") != signature
+        state["candidates"] = candidates
+
+        if signature_changed:
+            state["candidate_signature"] = signature
+            state["generation"] = int(state.get("generation", 0)) + 1
+            state["failures"] = 0
+            state["retry_after"] = 0
+            state["worker_running"] = False
+
+            if direct and local.get("latest_handshake") and now - local["latest_handshake"] <= DIRECT_MAX_AGE \
+                    and candidate_endpoint_exists(candidates, local.get("endpoint", "")):
+                state.update({
+                    "mode": "direct",
+                    "endpoint": local.get("endpoint", ""),
+                    "selected_type": candidate_type_for_endpoint(candidates, local.get("endpoint", "")),
+                })
+                save_state()
+            else:
+                if local:
+                    wg_set("peer", key, "remove")
+                    local = None
+                    direct = False
+                state.update({"mode": "idle", "endpoint": "", "selected_type": "", "started": 0})
+
+        if direct:
+            latest = int(local.get("latest_handshake", 0) or 0)
+            if latest and now - latest <= DIRECT_MAX_AGE:
+                state["mode"] = "direct"
+                state["endpoint"] = local.get("endpoint", "")
+                state["worker_running"] = False
+                save_state()
+            else:
                 wg_set("peer", key, "remove")
-            state.update({"endpoint": endpoint, "mode": "idle", "failures": 0, "retry_after": 0})
-            start_probe(key, state, now)
-            log("offer {} via {} {}; probing".format(peer_ip, endpoint_type, endpoint))
-        elif key not in current and now >= state.get("retry_after", 0):
-            start_probe(key, state, now)
-            log("restored probe {} via {}".format(peer_ip, endpoint))
+                state["generation"] = int(state.get("generation", 0)) + 1
+                state.update({
+                    "mode": "idle", "endpoint": "", "selected_type": "",
+                    "retry_after": 0, "worker_running": False,
+                })
+                direct = False
+
+        if not direct and now >= float(state.get("retry_after", 0)) and not state.get("worker_running"):
+            state["worker_running"] = True
+            state["mode"] = "probe"
+            generation = int(state.get("generation", 0))
+            launch = True
         save_state()
+
+    if launch:
+        launch_probe(key, generation)
 
     lan_ip = local_ipv4()
     wg_port = listen_port()
@@ -302,15 +472,19 @@ def handle_remove(data):
         current = local_wg_peers()
         if key in current:
             wg_set("peer", key, "remove")
-        if key in STATES:
+        state = STATES.get(key)
+        if state:
+            state["generation"] = int(state.get("generation", 0)) + 1
+            state["worker_running"] = False
             del STATES[key]
             save_state()
             log("removed expired peer {}".format(peer_ip))
-    return {"ok": True, "version": VERSION}
+    return {"ok": True, "version": VERSION, "protocol": 7}
 
 
 def monitor_once():
     now = time.time()
+    launches = []
     with STATE_LOCK:
         if not STATES:
             return
@@ -320,59 +494,52 @@ def monitor_once():
             peer_ip = state.get("ip", "?")
             local = current.get(key)
 
-            if now >= state.get("lease_expires", 0):
+            if now >= float(state.get("lease_expires", 0)):
                 if local:
                     wg_set("peer", key, "remove")
+                state["generation"] = int(state.get("generation", 0)) + 1
+                state["worker_running"] = False
                 del STATES[key]
                 log("lease expired {}; peer removed".format(peer_ip))
                 changed = True
                 continue
 
-            mode = state.get("mode", "idle")
-            if local and peer_ip + "/32" in local["allowed_ips"]:
-                mode = "direct"
-                state["mode"] = mode
-
-            if mode == "direct":
-                latest = local["latest_handshake"] if local else 0
+            direct = bool(local and peer_ip + "/32" in local.get("allowed_ips", []))
+            if direct:
+                latest = int(local.get("latest_handshake", 0) or 0)
                 if latest and now - latest <= DIRECT_MAX_AGE:
+                    state["mode"] = "direct"
+                    state["endpoint"] = local.get("endpoint", "")
                     continue
-                if local:
-                    wg_set("peer", key, "remove")
-                start_probe(key, state, now)
-                log("fallback {} to VPS; probing {}".format(peer_ip, state["endpoint"]))
+                wg_set("peer", key, "remove")
+                state["generation"] = int(state.get("generation", 0)) + 1
+                state.update({
+                    "mode": "idle", "endpoint": "", "selected_type": "",
+                    "retry_after": 0, "worker_running": False,
+                })
+                local = None
                 changed = True
-                continue
+                log("fallback {} to VPS; restarting candidate probe".format(peer_ip))
 
-            if mode == "probe":
-                if not local:
-                    start_probe(key, state, now)
-                    changed = True
-                    continue
-                latest = local["latest_handshake"]
-                if latest and latest >= state.get("started", 0) - 2:
-                    wg_set("peer", key, "allowed-ips", peer_ip + "/32",
-                           "endpoint", state["endpoint"],
-                           "persistent-keepalive", str(KEEPALIVE))
-                    state.update({"mode": "direct", "promoted": now, "failures": 0, "retry_after": 0})
-                    log("P2P OK {} via {} {}".format(peer_ip, state.get("endpoint_type", "WAN"), state["endpoint"]))
-                    changed = True
-                elif now - state.get("started", now) >= PROBE_TIMEOUT:
-                    wg_set("peer", key, "remove")
-                    failures = int(state.get("failures", 0)) + 1
-                    delay = retry_delay(failures)
-                    state.update({"mode": "idle", "failures": failures, "retry_after": now + delay})
-                    log("probe timeout {}; retry in {}s".format(peer_ip, delay))
-                    changed = True
+            if state.get("mode") == "probe" and state.get("worker_running"):
                 continue
-
-            if now >= state.get("retry_after", 0):
-                start_probe(key, state, now)
-                log("retry probe {} via {}".format(peer_ip, state["endpoint"]))
+            if state.get("mode") == "probe":
+                state["mode"] = "idle"
                 changed = True
+
+            if now >= float(state.get("retry_after", 0)) and not state.get("worker_running"):
+                candidates = state.get("candidates", [])
+                if candidates:
+                    state["worker_running"] = True
+                    state["mode"] = "probe"
+                    launches.append((key, int(state.get("generation", 0))))
+                    changed = True
 
         if changed:
             save_state()
+
+    for key, generation in launches:
+        launch_probe(key, generation)
 
 
 def monitor_loop():
@@ -445,7 +612,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         with STATE_LOCK:
             state_count = len(STATES)
-        self.send_json(200, {"ok": True, "version": VERSION, "state_count": state_count})
+            probing = sum(1 for item in STATES.values() if item.get("worker_running"))
+        self.send_json(200, {"ok": True, "version": VERSION, "protocol": 7,
+                             "state_count": state_count, "probing": probing})
 
     def do_POST(self):
         if self.path not in ("/offer", "/remove"):
