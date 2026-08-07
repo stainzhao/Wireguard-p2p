@@ -11,9 +11,16 @@ ExecStart=/usr/bin/python3 /opt/wireguard-p2p/p2p_sync.py
 Restart=always
 RestartSec=5
 TimeoutStopSec=10
-StateDirectory=wireguard-p2p
 RuntimeDirectory=wireguard-p2p
+RuntimeDirectoryMode=0700
 UMask=0077
+
+# Legacy compatibility path: routine event output is discarded, while actual
+# sync errors are emitted on stderr and remain diagnosable in the journal.
+StandardOutput=null
+StandardError=journal
+LogRateLimitIntervalSec=5min
+LogRateLimitBurst=20
 
 AmbientCapabilities=CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_ADMIN
