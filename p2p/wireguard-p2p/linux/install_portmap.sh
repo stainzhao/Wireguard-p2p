@@ -36,5 +36,5 @@ systemctl restart wireguard-p2p-agent.service
 systemctl --no-pager --full status wireguard-p2p-portmap.service || true
 
 echo
-echo "Current mapped4 cache:"
-cat /var/lib/wireguard-p2p/mapped4.json 2>/dev/null || echo "No mapping yet (router may not support PCP/NAT-PMP/UPnP)."
+echo "Current mapped4 runtime cache:"
+cat /run/wireguard-p2p/mapped4.json 2>/dev/null || echo "No mapping yet (router may not support PCP/NAT-PMP/UPnP)."
