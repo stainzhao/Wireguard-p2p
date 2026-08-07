@@ -11,7 +11,7 @@ func TestEndpointIP(t *testing.T) {
 		"[2001:db8::1]:51820":      "2001:db8::1",
 		"192.168.0.134:35422":      "192.168.0.134",
 		"missing-port":             "",
-		"2001:db8::1:invalid-port": "2001:db8::1",
+		"2001:db8::1:invalid-port": "",
 	}
 	for input, want := range tests {
 		if got := endpointIP(input); got != want {
@@ -45,11 +45,11 @@ func TestRetryDelayEntersCooldown(t *testing.T) {
 }
 
 func TestRecordProbeFailure(t *testing.T) {
-	state := &peerState{Mode: "probe", Started: 900}
+	state := &peerState{Mode: "probe", Started: 900, BaselineHandshake: 123}
 	if delay := recordProbeFailure(state, 1000); delay != time.Minute {
 		t.Fatalf("first delay = %s", delay)
 	}
-	if state.Mode != "idle" || state.Started != 0 || state.RetryAfter != 1060 {
+	if state.Mode != "idle" || state.Started != 0 || state.BaselineHandshake != 0 || state.RetryAfter != 1060 {
 		t.Fatalf("unexpected state after first failure: %+v", state)
 	}
 	recordProbeFailure(state, 1060)
