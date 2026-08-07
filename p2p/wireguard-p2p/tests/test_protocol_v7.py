@@ -92,8 +92,35 @@ class CandidateProtocolTests(unittest.TestCase):
             "[2001:4860:4860::8888]:51820",
         )
         self.assertTrue(candidates.usable_global_ipv6("2001:4860:4860::8888"))
+        self.assertTrue(candidates.usable_global_ipv6("2001:da8:216:191a::1"))
+        self.assertFalse(candidates.usable_global_ipv6("2001:3::1"))
+        self.assertFalse(candidates.usable_global_ipv6("2001:db8::1"))
         self.assertFalse(candidates.usable_global_ipv6("fe80::1"))
         self.assertFalse(candidates.usable_global_ipv6("fd00::1"))
+
+    def test_special_use_ipv6_is_not_selected_as_host6(self):
+        advertised = [{
+            "type": "host6",
+            "family": "udp6",
+            "endpoint": "[2001:3::1234]:33967",
+            "priority": 900,
+        }]
+        result = candidates.select_probe_candidates(
+            advertised, "8.8.8.8:40000", "WAN"
+        )
+        self.assertEqual([item["type"] for item in result], ["observed4"])
+
+    def test_observed6_endpoint_classification(self):
+        self.assertEqual(
+            candidates.observed_type_for_endpoint(
+                "[2001:da8:216:191a:5ad9:d5ff:fe0d:dcf1]:48132"
+            ),
+            "observed6",
+        )
+        self.assertEqual(
+            candidates.observed_type_for_endpoint("[2001:3::1234]:48132"),
+            "",
+        )
 
     def test_agent_accepts_v7_host6_candidate(self):
         result = agent.validate_candidates([
