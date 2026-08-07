@@ -26,10 +26,11 @@ from candidates import (
     candidate_signature,
     candidate_type_for_endpoint,
     gather_candidates,
+    global_ipv6_addresses,
     select_probe_candidates,
 )
 
-VERSION = "7.2.1"
+VERSION = "7.2.2"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
@@ -42,6 +43,8 @@ PROBE_KEEPALIVE = 1
 DIRECT_MAX_AGE = 180
 CANDIDATE_PROBE_WINDOW = 2.0
 PROBE_POLL_INTERVAL = 0.25
+CONFIRMATION_REKEY_DELAY = 3.0
+CONFIRMATION_REKEY_WINDOW = 8.0
 RETRY_DELAYS = (3, 10)
 FAILURE_COOLDOWN = 1800
 MAX_REQUEST_SIZE = 16384
@@ -356,6 +359,167 @@ def verify_signed_notification(
     return json.loads(body.decode())
 
 
+def should_confirmation_rekey(candidate):
+    return bool(
+        isinstance(candidate, dict)
+        and candidate.get("type") == "host6"
+        and not global_ipv6_addresses()
+    )
+
+
+def trigger_overlay_packet(peer_ip):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(b"\x00", (peer_ip, 9))
+    except OSError:
+        pass
+    finally:
+        sock.close()
+
+
+def confirmation_rekey_worker(key, generation, peer_ip, endpoint):
+    if STOP.wait(CONFIRMATION_REKEY_DELAY):
+        return
+
+    with STATE_LOCK:
+        state = STATES.get(key)
+        if (
+            not state
+            or state.get("generation") != generation
+            or state.get("mode") != "direct"
+            or state.get("endpoint") != endpoint
+        ):
+            return
+        state["mode"] = "confirm6"
+        state["worker_running"] = True
+        state["started"] = time.time()
+        state["baseline_handshake"] = 0
+        try:
+            wg_set("peer", key, "remove")
+            wg_set(
+                "peer",
+                key,
+                "allowed-ips",
+                peer_ip + "/32",
+                "endpoint",
+                endpoint,
+                "persistent-keepalive",
+                str(PROBE_KEEPALIVE),
+            )
+        except Exception as exc:
+            try:
+                wg_set("peer", key, "remove")
+            except Exception:
+                pass
+            failures = int(state.get("failures", 0)) + 1
+            delay = retry_delay(failures)
+            state.update({
+                "mode": "idle",
+                "endpoint": "",
+                "endpoint_type": "",
+                "selected_type": "",
+                "failures": failures,
+                "retry_after": time.time() + delay,
+                "worker_running": False,
+                "started": 0,
+                "baseline_handshake": 0,
+            })
+            save_state()
+            log_error("IPv6 confirmation rekey setup failed: {}".format(exc))
+            return
+        save_state()
+
+    # Recreating the peer clears the old WireGuard session.  A packet to the
+    # overlay address then forces a fresh authenticated handshake immediately.
+    trigger_overlay_packet(peer_ip)
+
+    deadline = time.monotonic() + CONFIRMATION_REKEY_WINDOW
+    while time.monotonic() < deadline:
+        if STOP.wait(PROBE_POLL_INTERVAL):
+            return
+        local = local_wg_peers().get(key)
+        latest = int((local or {}).get("latest_handshake", 0) or 0)
+        if not latest or time.time() - latest > 5:
+            continue
+        actual_endpoint = (local or {}).get("endpoint") or endpoint
+        with STATE_LOCK:
+            state = STATES.get(key)
+            if (
+                not state
+                or state.get("generation") != generation
+                or state.get("mode") != "confirm6"
+                or not state.get("worker_running")
+            ):
+                return
+            try:
+                wg_set(
+                    "peer",
+                    key,
+                    "allowed-ips",
+                    peer_ip + "/32",
+                    "endpoint",
+                    actual_endpoint,
+                    "persistent-keepalive",
+                    str(KEEPALIVE),
+                )
+            except Exception as exc:
+                log_error("IPv6 confirmation rekey finalize failed: {}".format(exc))
+                return
+            state.update({
+                "mode": "direct",
+                "endpoint": actual_endpoint,
+                "endpoint_type": "host6",
+                "selected_type": "host6",
+                "failures": 0,
+                "retry_after": 0,
+                "worker_running": False,
+                "started": 0,
+                "baseline_handshake": 0,
+            })
+            save_state()
+        log("IPv6 confirmation rekey OK {} via host6 {}".format(peer_ip, actual_endpoint))
+        return
+
+    with STATE_LOCK:
+        state = STATES.get(key)
+        if (
+            not state
+            or state.get("generation") != generation
+            or state.get("mode") != "confirm6"
+            or not state.get("worker_running")
+        ):
+            return
+        try:
+            wg_set("peer", key, "remove")
+        except Exception:
+            pass
+        failures = int(state.get("failures", 0)) + 1
+        delay = retry_delay(failures)
+        state.update({
+            "mode": "idle",
+            "endpoint": "",
+            "endpoint_type": "",
+            "selected_type": "",
+            "failures": failures,
+            "retry_after": time.time() + delay,
+            "worker_running": False,
+            "started": 0,
+            "baseline_handshake": 0,
+        })
+        save_state()
+    log("IPv6 confirmation rekey failed {}; fallback to VPS; retry in {}s".format(peer_ip, delay))
+
+
+def launch_confirmation_rekey(key, generation, peer_ip, endpoint):
+    thread = threading.Thread(
+        target=confirmation_rekey_worker,
+        args=(key, generation, peer_ip, endpoint),
+        name="confirm6-{}".format(key[:8]),
+    )
+    thread.daemon = True
+    thread.start()
+
+
 def probe_generation_current(key, generation):
     with STATE_LOCK:
         state = STATES.get(key)
@@ -479,6 +643,10 @@ def probe_worker(key, generation):
                     peer_ip, selected_type, actual_endpoint
                 )
             )
+            if should_confirmation_rekey(candidate):
+                launch_confirmation_rekey(
+                    key, generation, peer_ip, actual_endpoint
+                )
             return
 
     with STATE_LOCK:
@@ -740,6 +908,9 @@ def monitor_once():
                 del STATES[key]
                 log("lease expired {}; peer removed".format(peer_ip))
                 changed = True
+                continue
+
+            if state.get("mode") == "confirm6" and state.get("worker_running"):
                 continue
 
             direct = bool(
