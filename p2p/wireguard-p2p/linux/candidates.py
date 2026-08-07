@@ -3,7 +3,9 @@
 
 import ipaddress
 import json
+import os
 import subprocess
+import time
 
 PRIORITY = {
     "lan4": 1000,
@@ -13,6 +15,9 @@ PRIORITY = {
     "predicted4": 400,
 }
 MAX_PROBE_CANDIDATES = 5
+PORTMAP_STATE_FILE = os.environ.get(
+    "P2P_PORTMAP_STATE_FILE", "/run/wireguard-p2p/mapped4.json"
+)
 
 
 def format_endpoint(address, port):
@@ -98,6 +103,32 @@ def global_ipv6_addresses():
     return addresses
 
 
+def mapped_candidate_from_state(listen_port, lan_ip, state_file=None, now=None):
+    """Return the daemon-maintained mapping only when it matches this WG socket."""
+    state_file = state_file or PORTMAP_STATE_FILE
+    now = time.time() if now is None else float(now)
+    try:
+        with open(state_file, "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return None
+
+    try:
+        if state.get("internal_ip") != str(ipaddress.ip_address(lan_ip)):
+            return None
+        if int(state.get("internal_port", 0)) != int(listen_port):
+            return None
+        if float(state.get("expires_at", 0)) <= now + 15:
+            return None
+        candidate = normalize_probe_candidate(state.get("candidate"))
+    except (TypeError, ValueError):
+        return None
+    if candidate is None or candidate["type"] != "mapped4":
+        return None
+    candidate["priority"] = PRIORITY["mapped4"]
+    return candidate
+
+
 def gather_candidates(listen_port, lan_ip=""):
     port = int(listen_port)
     if not 1 <= port <= 65535:
@@ -115,6 +146,9 @@ def gather_candidates(listen_port, lan_ip=""):
                     "priority": PRIORITY["lan4"],
                     "verified": False,
                 })
+                mapped = mapped_candidate_from_state(port, str(ip))
+                if mapped:
+                    candidates.append(mapped)
         except ValueError:
             pass
 
@@ -225,8 +259,15 @@ def candidate_endpoint_exists(candidates, endpoint):
 def _dedupe_and_sort(candidates, by_endpoint):
     result = []
     seen = set()
-    for candidate in sorted(candidates, key=lambda item: (-int(item.get("priority", 0)), item.get("endpoint", ""))):
-        key = candidate.get("endpoint") if by_endpoint else (candidate.get("type"), candidate.get("endpoint"))
+    for candidate in sorted(
+        candidates,
+        key=lambda item: (-int(item.get("priority", 0)), item.get("endpoint", "")),
+    ):
+        key = (
+            candidate.get("endpoint")
+            if by_endpoint
+            else (candidate.get("type"), candidate.get("endpoint"))
+        )
         if not key or key in seen:
             continue
         seen.add(key)
