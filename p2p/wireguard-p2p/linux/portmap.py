@@ -68,7 +68,7 @@ def build_pcp_map_request(local_ip, internal_port, lifetime, nonce=None):
         raise ValueError("PCP nonce must be 12 bytes")
     packet = bytearray(60)
     packet[0] = 2
-    packet[1] = 1  # MAP opcode
+    packet[1] = 1
     struct.pack_into("!I", packet, 4, int(lifetime))
     packet[8:24] = _ipv4_mapped(local_ip)
     packet[24:36] = nonce
@@ -157,7 +157,6 @@ def try_natpmp(gateway, local_ip, internal_port, lifetime=DEFAULT_LIFETIME):
         if source[0] != gateway:
             raise ValueError("unexpected NAT-PMP responder")
         external_ip = parse_natpmp_public_response(public_packet)
-
         sock.sendto(build_natpmp_map_request(internal_port, lifetime), (gateway, NATPMP_PORT))
         map_packet, source = sock.recvfrom(1024)
         if source[0] != gateway:
@@ -318,7 +317,8 @@ class PortMapper:
                 return False
             if self._internal != key or self._candidate is None:
                 return True
-            return self._expires_at - now <= max(300, DEFAULT_LIFETIME // 3)
+            remaining = self._expires_at - now
+            return remaining <= max(15, min(300, remaining / 3))
 
     def refresh(self, internal_port, local_ip):
         port = int(internal_port)
@@ -352,7 +352,9 @@ class PortMapper:
         return None
 
     def _record_success(self, key, method, external_ip, external_port, lifetime):
-        lifetime = max(60, int(lifetime or DEFAULT_LIFETIME))
+        lifetime = int(lifetime)
+        if lifetime <= 0:
+            raise ValueError("port mapping returned zero lifetime")
         candidate = {
             "type": "mapped4",
             "family": "udp4",
@@ -361,11 +363,12 @@ class PortMapper:
             "verified": False,
         }
         now = time.time()
+        refresh_after = max(1, min(lifetime * 2 / 3, max(1, lifetime - 15)))
         with self._lock:
             self._internal = key
             self._candidate = candidate
             self._expires_at = now + lifetime
-            self._next_attempt = now + min(lifetime * 2 / 3, max(60, lifetime - 300))
+            self._next_attempt = now + refresh_after
             self._method = method
             self._last_error = ""
         return dict(candidate)
@@ -383,7 +386,11 @@ class PortMapper:
     def status(self):
         now = time.time()
         with self._lock:
-            endpoint = self._candidate.get("endpoint", "") if self._candidate and now < self._expires_at else ""
+            endpoint = (
+                self._candidate.get("endpoint", "")
+                if self._candidate and now < self._expires_at
+                else ""
+            )
             return {
                 "method": self._method if endpoint else "",
                 "endpoint": endpoint,
