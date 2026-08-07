@@ -10,6 +10,7 @@ import time
 PRIORITY = {
     "lan4": 1000,
     "host6": 900,
+    "observed6": 850,
     "mapped4": 800,
     "observed4": 600,
     "predicted4": 400,
@@ -17,6 +18,23 @@ PRIORITY = {
 MAX_PROBE_CANDIDATES = 5
 PORTMAP_STATE_FILE = os.environ.get(
     "P2P_PORTMAP_STATE_FILE", "/var/lib/wireguard-p2p/mapped4.json"
+)
+NON_HOST_IPV6_NETWORKS = tuple(
+    ipaddress.ip_network(value)
+    for value in (
+        "64:ff9b::/96",
+        "64:ff9b:1::/48",
+        "100::/64",
+        "2001::/32",
+        "2001:2::/48",
+        "2001:3::/32",
+        "2001:4:112::/48",
+        "2001:10::/28",
+        "2001:20::/28",
+        "2001:db8::/32",
+        "2002::/16",
+        "3fff::/20",
+    )
 )
 
 
@@ -58,6 +76,7 @@ def usable_global_ipv6(address):
         and not ip.is_link_local
         and not ip.is_loopback
         and not ip.is_multicast
+        and not any(ip in network for network in NON_HOST_IPV6_NETWORKS)
     )
 
 
@@ -177,7 +196,7 @@ def normalize_probe_candidate(value):
 
     if candidate_type == "lan4" and (address.version != 4 or not address.is_private):
         return None
-    if candidate_type == "host6" and not usable_global_ipv6(address):
+    if candidate_type in ("host6", "observed6") and not usable_global_ipv6(address):
         return None
     if candidate_type in ("mapped4", "observed4", "predicted4") and address.version != 4:
         return None
@@ -200,7 +219,7 @@ def select_probe_candidates(values, legacy_endpoint="", endpoint_type="WAN", all
             continue
         if candidate["type"] == "lan4" and not allow_lan:
             continue
-        if candidate["type"] == "host6" and not allow_ipv6:
+        if candidate["type"] in ("host6", "observed6") and not allow_ipv6:
             continue
         candidates.append(candidate)
 
@@ -254,6 +273,18 @@ def candidate_type_for_endpoint(candidates, endpoint):
 
 def candidate_endpoint_exists(candidates, endpoint):
     return bool(candidate_type_for_endpoint(candidates, endpoint))
+
+
+def observed_type_for_endpoint(endpoint):
+    try:
+        _normalized, address, _port = parse_endpoint(endpoint)
+    except (TypeError, ValueError):
+        return ""
+    if address.version == 6 and usable_global_ipv6(address):
+        return "observed6"
+    if address.version == 4 and address.is_global and not address.is_private:
+        return "observed4"
+    return ""
 
 
 def _dedupe_and_sort(candidates, by_endpoint):
