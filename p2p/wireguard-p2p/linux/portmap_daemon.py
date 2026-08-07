@@ -64,10 +64,11 @@ def write_state(candidate, internal_ip, internal_port, status):
     }
     fd, temporary = tempfile.mkstemp(prefix="mapped4-", suffix=".json", dir=directory)
     try:
+        # STATE_FILE lives under /run (tmpfs). Durability across a crash or reboot
+        # is neither required nor useful, so avoid fsync and only atomically replace
+        # the in-memory cache after the file is closed/flushed by the context manager.
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
         os.replace(temporary, STATE_FILE)
     finally:
         try:
