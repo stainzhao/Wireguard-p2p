@@ -1,0 +1,37 @@
+[Unit]
+Description=WireGuard P2P event agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=__SERVICE_USER__
+Group=__SERVICE_USER__
+Environment=P2P_LISTEN_ADDRESS=__OVERLAY_IP__
+Environment=P2P_NOTIFY_KEY_FILE=/etc/wireguard-p2p/notify.key
+ExecStart=/usr/bin/python3 /opt/wireguard-p2p/p2p_agent.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+StateDirectory=wireguard-p2p
+RuntimeDirectory=wireguard-p2p
+UMask=0077
+
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

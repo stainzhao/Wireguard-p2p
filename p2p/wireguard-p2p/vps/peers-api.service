@@ -1,0 +1,34 @@
+[Unit]
+Description=WireGuard P2P endpoint coordinator
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=wireguard-p2p
+Group=wireguard-p2p
+Environment=P2P_NOTIFY_KEY_FILE=/etc/wireguard-p2p/notify.key
+ExecStart=/usr/bin/python3 /opt/wireguard-p2p/peers_api.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=5
+UMask=0077
+
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
