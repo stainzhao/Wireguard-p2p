@@ -9,7 +9,16 @@ const (
 	candidateProbeWindow = 2 * time.Second
 	probePollInterval    = 250 * time.Millisecond
 	probeKeepalive       = 1
+	simultaneousIPv6Window = 8 * time.Second
 )
+
+
+func probeWindowForCandidate(candidate Candidate) time.Duration {
+	if candidate.Type == "reflexive6" {
+		return simultaneousIPv6Window
+	}
+	return candidateProbeWindow
+}
 
 func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 	var ours *apiPeer
@@ -194,6 +203,9 @@ func (a *app) runProbeWorker(key, serverIP string, generation int64) {
 		if !a.probeGenerationCurrent(key, generation) {
 			return
 		}
+		if candidate.Type == "reflexive6" {
+			a.log("Simultaneous IPv6 punch " + serverIP + " via " + candidate.Endpoint + ".")
+		}
 		local, _ := a.localPeer(key)
 		baseline := local.LatestHandshake
 
@@ -216,7 +228,7 @@ func (a *app) runProbeWorker(key, serverIP string, generation int64) {
 		state.BaselineHandshake = baseline
 		a.mu.Unlock()
 
-		deadline := time.Now().Add(candidateProbeWindow)
+		deadline := time.Now().Add(probeWindowForCandidate(candidate))
 		for time.Now().Before(deadline) {
 			time.Sleep(probePollInterval)
 			if !a.probeGenerationCurrent(key, generation) {

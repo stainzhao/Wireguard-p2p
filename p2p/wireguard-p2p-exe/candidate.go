@@ -11,6 +11,7 @@ const (
 	candidatePriorityLAN4      = 1000
 	candidatePriorityHost6     = 900
 	candidatePriorityObserved6 = 850
+	candidatePriorityReflexive6 = 825
 	candidatePriorityMapped4   = 800
 	candidatePriorityObserved4 = 600
 	candidatePriorityPredict4  = 400
@@ -120,6 +121,8 @@ func candidateDefaultPriority(candidateType string) int {
 		return candidatePriorityHost6
 	case "observed6":
 		return candidatePriorityObserved6
+	case "reflexive6":
+		return candidatePriorityReflexive6
 	case "mapped4":
 		return candidatePriorityMapped4
 	case "observed4":
@@ -150,7 +153,7 @@ func normalizeCandidate(candidate Candidate) (Candidate, bool) {
 		if ip.To4() == nil || !ip.IsPrivate() {
 			return Candidate{}, false
 		}
-	case "host6", "observed6":
+	case "host6", "observed6", "reflexive6":
 		if !isUsableGlobalIPv6(ip) {
 			return Candidate{}, false
 		}
@@ -178,7 +181,7 @@ func normalizeCandidate(candidate Candidate) (Candidate, bool) {
 func buildProbeCandidates(advertised []Candidate, publicEndpoint, lanEndpoint string, sameNAT, allowIPv6 bool) []Candidate {
 	all := make([]Candidate, 0, len(advertised)+2)
 	for _, candidate := range advertised {
-		if (candidate.Type == "host6" || candidate.Type == "observed6") && !allowIPv6 {
+		if (candidate.Type == "host6" || candidate.Type == "observed6" || candidate.Type == "reflexive6") && !allowIPv6 {
 			continue
 		}
 		if candidate.Type == "lan4" && !sameNAT {

@@ -11,6 +11,7 @@ PRIORITY = {
     "lan4": 1000,
     "host6": 900,
     "observed6": 850,
+    "reflexive6": 825,
     "mapped4": 800,
     "observed4": 600,
     "predicted4": 400,
@@ -122,6 +123,23 @@ def global_ipv6_addresses():
     return addresses
 
 
+def reflexive6_candidate(address, listen_port):
+    try:
+        ip = ipaddress.ip_address(address)
+        port = int(listen_port)
+    except (TypeError, ValueError):
+        return None
+    if not usable_global_ipv6(ip) or not 1 <= port <= 65535:
+        return None
+    return {
+        "type": "reflexive6",
+        "family": "udp6",
+        "endpoint": format_endpoint(ip, port),
+        "priority": PRIORITY["reflexive6"],
+        "verified": False,
+    }
+
+
 def mapped_candidate_from_state(listen_port, lan_ip, state_file=None, now=None):
     """Return the daemon-maintained mapping only when it matches this WG socket."""
     state_file = state_file or PORTMAP_STATE_FILE
@@ -196,7 +214,7 @@ def normalize_probe_candidate(value):
 
     if candidate_type == "lan4" and (address.version != 4 or not address.is_private):
         return None
-    if candidate_type in ("host6", "observed6") and not usable_global_ipv6(address):
+    if candidate_type in ("host6", "observed6", "reflexive6") and not usable_global_ipv6(address):
         return None
     if candidate_type in ("mapped4", "observed4", "predicted4") and address.version != 4:
         return None
@@ -219,7 +237,7 @@ def select_probe_candidates(values, legacy_endpoint="", endpoint_type="WAN", all
             continue
         if candidate["type"] == "lan4" and not allow_lan:
             continue
-        if candidate["type"] in ("host6", "observed6") and not allow_ipv6:
+        if candidate["type"] in ("host6", "observed6", "reflexive6") and not allow_ipv6:
             continue
         candidates.append(candidate)
 

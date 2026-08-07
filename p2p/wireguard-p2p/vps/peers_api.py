@@ -16,7 +16,7 @@ import time
 import urllib.request
 import uuid
 
-VERSION = "7.2.2"
+VERSION = "7.3.0"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
 AGENT_PORT = 8898
@@ -145,7 +145,7 @@ def validate_candidates(values, allow_observed=False):
         return []
     if not isinstance(values, list) or len(values) > MAX_CANDIDATES:
         raise ValueError("invalid candidates")
-    allowed_types = {"lan4", "host6", "mapped4", "predicted4"}
+    allowed_types = {"lan4", "host6", "reflexive6", "mapped4", "predicted4"}
     if allow_observed:
         allowed_types.add("observed4")
     result = []
@@ -159,7 +159,7 @@ def validate_candidates(values, allow_observed=False):
         endpoint, address, _port = parse_endpoint(value.get("endpoint", ""))
         if candidate_type == "lan4" and (address.version != 4 or not address.is_private):
             raise ValueError("lan4 candidate must be private IPv4")
-        if candidate_type == "host6" and (
+        if candidate_type in ("host6", "reflexive6") and (
             address.version != 6
             or not address.is_global
             or address.is_private

@@ -78,6 +78,16 @@ func TestBuildProbeCandidatesRejectsSpecialUseHost6(t *testing.T) {
 	}
 }
 
+func TestReflexive6CandidateAcceptedForPunch(t *testing.T) {
+	candidate, ok := normalizeCandidate(Candidate{Type: "reflexive6", Endpoint: "[2001:da8:216:191a::1]:33967", Priority: 825})
+	if !ok || candidate.Type != "reflexive6" || candidate.Family != "udp6" {
+		t.Fatalf("unexpected reflexive6 candidate: %+v ok=%v", candidate, ok)
+	}
+	if got := probeWindowForCandidate(candidate); got != simultaneousIPv6Window {
+		t.Fatalf("reflexive6 window=%v want %v", got, simultaneousIPv6Window)
+	}
+}
+
 func TestBuildProbeCandidatesKeepsLANOnSameNAT(t *testing.T) {
 	got := buildProbeCandidates(nil, "8.8.8.8:40000", "192.168.0.10:51820", true, false)
 	if len(got) < 2 || got[0].Type != "lan4" {

@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import uuid
+import urllib.request
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
@@ -27,10 +28,12 @@ from candidates import (
     candidate_type_for_endpoint,
     gather_candidates,
     global_ipv6_addresses,
+    reflexive6_candidate,
     select_probe_candidates,
+    usable_global_ipv6,
 )
 
-VERSION = "7.2.2"
+VERSION = "7.3.0"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
@@ -45,6 +48,15 @@ CANDIDATE_PROBE_WINDOW = 2.0
 PROBE_POLL_INTERVAL = 0.25
 CONFIRMATION_REKEY_DELAY = 3.0
 CONFIRMATION_REKEY_WINDOW = 8.0
+SIMULTANEOUS_IPV6_WINDOW = 8.0
+REFLEXIVE6_TTL = 600
+REFLEXIVE6_REFRESH_INTERVAL = 300
+REFLEXIVE6_DISCOVERY_TIMEOUT = 1.5
+REFLEXIVE6_DISCOVERY_URLS = (
+    "https://api6.ipify.org",
+    "https://6.ident.me",
+    "https://ipv6.icanhazip.com",
+)
 RETRY_DELAYS = (3, 10)
 FAILURE_COOLDOWN = 1800
 MAX_REQUEST_SIZE = 16384
@@ -58,6 +70,9 @@ SEEN_NONCES = {}
 STATE_LOCK = threading.Lock()
 NONCE_LOCK = threading.Lock()
 WG_LOCK = threading.Lock()
+REFLEXIVE6_LOCK = threading.Lock()
+REFLEXIVE6_ADDRESS = ""
+REFLEXIVE6_UPDATED = 0
 STOP = threading.Event()
 SERVER = None
 
@@ -255,7 +270,7 @@ def validate_candidates(values):
         return []
     if not isinstance(values, list) or len(values) > 16:
         raise ValueError("invalid candidates")
-    allowed_types = {"lan4", "host6", "mapped4", "observed4", "predicted4"}
+    allowed_types = {"lan4", "host6", "reflexive6", "mapped4", "observed4", "predicted4"}
     result = []
     seen = set()
     for value in values:
@@ -358,6 +373,64 @@ def verify_signed_notification(
     consume_nonce(nonce, now)
     return json.loads(body.decode())
 
+
+def discover_reflexive_ipv6():
+    # Native host6 is already the preferred path; reflexive discovery is only
+    # useful for nodes whose local IPv6 is special-use/NAT66 translated.
+    if global_ipv6_addresses():
+        return ""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    for url in REFLEXIVE6_DISCOVERY_URLS:
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "wireguard-p2p/{}".format(VERSION)},
+            )
+            with opener.open(request, timeout=REFLEXIVE6_DISCOVERY_TIMEOUT) as response:
+                value = response.read(128).decode("ascii", "strict").strip()
+            if usable_global_ipv6(value):
+                return str(ipaddress.ip_address(value))
+        except Exception:
+            continue
+    return ""
+
+
+def refresh_reflexive_ipv6():
+    global REFLEXIVE6_ADDRESS, REFLEXIVE6_UPDATED
+    now = time.time()
+    address = discover_reflexive_ipv6()
+    with REFLEXIVE6_LOCK:
+        if address:
+            REFLEXIVE6_ADDRESS = address
+            REFLEXIVE6_UPDATED = now
+        elif now - REFLEXIVE6_UPDATED > REFLEXIVE6_TTL:
+            REFLEXIVE6_ADDRESS = ""
+            REFLEXIVE6_UPDATED = 0
+
+
+def current_reflexive6_candidate(listen_port_value):
+    now = time.time()
+    with REFLEXIVE6_LOCK:
+        address = REFLEXIVE6_ADDRESS
+        updated = REFLEXIVE6_UPDATED
+    if not address or now - updated > REFLEXIVE6_TTL:
+        return None
+    return reflexive6_candidate(address, listen_port_value)
+
+
+def reflexive6_loop():
+    while not STOP.wait(REFLEXIVE6_REFRESH_INTERVAL):
+        refresh_reflexive_ipv6()
+
+
+def candidate_probe_window(candidate):
+    if (
+        isinstance(candidate, dict)
+        and candidate.get("type") == "host6"
+        and not global_ipv6_addresses()
+    ):
+        return SIMULTANEOUS_IPV6_WINDOW
+    return CANDIDATE_PROBE_WINDOW
 
 def should_confirmation_rekey(candidate):
     return bool(
@@ -587,7 +660,7 @@ def probe_worker(key, generation):
             })
             save_state()
 
-        deadline = time.monotonic() + CANDIDATE_PROBE_WINDOW
+        deadline = time.monotonic() + candidate_probe_window(candidate)
         while time.monotonic() < deadline:
             if STOP.wait(PROBE_POLL_INTERVAL):
                 return
@@ -840,6 +913,11 @@ def handle_offer(data):
 
     lan_ip = local_ipv4()
     wg_port = listen_port()
+    local_candidates = gather_candidates(wg_port, lan_ip)
+    reflexive = current_reflexive6_candidate(wg_port)
+    if reflexive:
+        local_candidates.append(reflexive)
+        local_candidates.sort(key=lambda item: (-int(item.get("priority", 0)), item.get("endpoint", "")))
     return {
         "ok": True,
         "version": VERSION,
@@ -849,7 +927,7 @@ def handle_offer(data):
         "ip": LISTEN_ADDRESS,
         "lan_ip": lan_ip,
         "listen_port": wg_port,
-        "candidates": gather_candidates(wg_port, lan_ip),
+        "candidates": local_candidates,
     }
 
 
@@ -1095,6 +1173,10 @@ def main():
     NOTIFY_KEY = load_notify_key()
     STATES = load_state()
     cleanup_orphans()
+    refresh_reflexive_ipv6()
+    reflexive_monitor = threading.Thread(target=reflexive6_loop, name="reflexive6-monitor")
+    reflexive_monitor.daemon = True
+    reflexive_monitor.start()
     monitor = threading.Thread(target=monitor_loop, name="peer-monitor")
     monitor.daemon = True
     monitor.start()
