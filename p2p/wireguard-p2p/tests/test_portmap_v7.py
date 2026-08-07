@@ -87,6 +87,25 @@ class PortMapProtocolTests(unittest.TestCase):
         self.assertFalse(portmap._public_ipv4("100.64.0.1"))
         self.assertTrue(portmap._public_ipv4("8.8.8.8"))
 
+    def test_mapper_honors_short_granted_lifetime(self):
+        mapper = portmap.PortMapper()
+        mapper._record_success(
+            ("192.168.1.10", 51820), "pcp", "8.8.8.8", 62000, 30
+        )
+        status = mapper.status()
+        self.assertGreater(status["expires_in"], 0)
+        self.assertLessEqual(status["expires_in"], 30)
+        with mapper._lock:
+            mapper._next_attempt = time.time() - 1
+        self.assertTrue(mapper.should_refresh(51820, "192.168.1.10"))
+
+    def test_zero_lifetime_is_not_published(self):
+        mapper = portmap.PortMapper()
+        with self.assertRaises(ValueError):
+            mapper._record_success(
+                ("192.168.1.10", 51820), "pcp", "8.8.8.8", 62000, 0
+            )
+
 
 class MappedCandidateCacheTests(unittest.TestCase):
     def write_state(self, path, **changes):
