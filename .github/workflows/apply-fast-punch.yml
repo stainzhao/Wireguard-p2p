@@ -1,0 +1,66 @@
+name: apply fast IPv6 punch tuning
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-fast-punch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply focused v7.2.1 tuning
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              if old not in text:
+                  raise SystemExit(f'expected source fragment not found in {path}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace(
+              'p2p/wireguard-p2p/linux/p2p_agent.py',
+              'VERSION = "7.0.0"',
+              'VERSION = "7.2.1"',
+          )
+          replace(
+              'p2p/wireguard-p2p/linux/p2p_agent.py',
+              'RETRY_DELAYS = (60, 120)',
+              'RETRY_DELAYS = (3, 10)',
+          )
+          replace(
+              'p2p/wireguard-p2p-exe/main.go',
+              'version          = "7.0.0"',
+              'version          = "7.2.1"',
+          )
+          replace(
+              'p2p/wireguard-p2p/vps/peers_api.py',
+              'VERSION = "7.0.0"',
+              'VERSION = "7.2.1"',
+          )
+          replace(
+              'p2p/wireguard-p2p-exe/probe.go',
+              '\ta.mu.Unlock()\n\tif passiveIPv6 {\n\t\ta.log("Candidate probe failed " + serverIP + "; passive IPv6 listener armed; active retry in " + delay.String() + ".")',
+              '\ta.mu.Unlock()\n\tif passiveIPv6 {\n\t\tgo a.watchPassiveIPv6(key, serverIP, generation)\n\t\ta.log("Candidate probe failed " + serverIP + "; passive IPv6 listener armed; fast IPv6 retry expected within seconds; fallback retry in " + delay.String() + ".")',
+          )
+          PY
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add p2p/wireguard-p2p/linux/p2p_agent.py \
+                  p2p/wireguard-p2p/vps/peers_api.py \
+                  p2p/wireguard-p2p-exe/main.go \
+                  p2p/wireguard-p2p-exe/probe.go
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'perf: cut IPv6 NAT traversal retry to seconds'
+          git push origin HEAD:main
