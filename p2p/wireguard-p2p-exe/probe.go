@@ -76,10 +76,13 @@ func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 			state.WorkerRunning = false
 
 			if direct && local.LatestHandshake > 0 && now-local.LatestHandshake <= int64(directMaxAge/time.Second) &&
-				candidateEndpointExists(candidates, local.Endpoint) {
+				(candidateEndpointExists(candidates, local.Endpoint) || observedTypeForEndpoint(local.Endpoint) == "observed6") {
 				state.Mode = "direct"
 				state.Endpoint = local.Endpoint
 				state.SelectedType = candidateTypeForEndpoint(candidates, local.Endpoint)
+				if state.SelectedType == "" {
+					state.SelectedType = observedTypeForEndpoint(local.Endpoint)
+				}
 				a.mu.Unlock()
 				continue
 			}
@@ -101,6 +104,9 @@ func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 				state.Endpoint = local.Endpoint
 				if state.SelectedType == "" {
 					state.SelectedType = candidateTypeForEndpoint(candidates, local.Endpoint)
+					if state.SelectedType == "" {
+						state.SelectedType = observedTypeForEndpoint(local.Endpoint)
+					}
 				}
 				state.WorkerRunning = false
 				a.mu.Unlock()
@@ -115,6 +121,31 @@ func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 			state.Started = 0
 			state.RetryAfter = 0
 			a.log("Fallback " + serverIP + " to VPS; starting candidate probe.")
+			exists = false
+		}
+
+		// A peer behind IPv6 translation may actively contact us even when it has no
+		// publishable host6 candidate.  If WireGuard learned a fresh global IPv6
+		// endpoint while this peer was passively armed, promote it immediately.
+		if !direct && exists && local.LatestHandshake > 0 && now-local.LatestHandshake <= int64(onlineMaxAge/time.Second) {
+			learnedType := observedTypeForEndpoint(local.Endpoint)
+			if learnedType == "observed6" {
+				_, err := a.wg("set", a.interfaceName, "peer", peer.Key,
+					"allowed-ips", serverIP+"/32",
+					"endpoint", local.Endpoint,
+					"persistent-keepalive", strconv.Itoa(keepalive))
+				if err == nil {
+					state.Mode = "direct"
+					state.Endpoint = local.Endpoint
+					state.SelectedType = learnedType
+					state.Failures = 0
+					state.RetryAfter = 0
+					state.WorkerRunning = false
+					a.mu.Unlock()
+					a.log("P2P OK " + serverIP + " via observed6 " + local.Endpoint)
+					continue
+				}
+			}
 		}
 
 		if state.Mode == "probe" && state.WorkerRunning {
@@ -202,6 +233,9 @@ func (a *app) runProbeWorker(key, serverIP string, generation int64) {
 			}
 			selectedType := candidateTypeForEndpoint(candidates, actualEndpoint)
 			if selectedType == "" {
+				selectedType = observedTypeForEndpoint(actualEndpoint)
+			}
+			if selectedType == "" {
 				selectedType = candidate.Type
 			}
 
@@ -238,13 +272,28 @@ func (a *app) runProbeWorker(key, serverIP string, generation int64) {
 		a.mu.Unlock()
 		return
 	}
+
+	// If this Windows node has native IPv6 but the remote peer has no host6,
+	// keep a route-less peer armed after active probes fail.  An authenticated
+	// inbound WireGuard handshake can then teach us the remote NAT66 endpoint.
+	passiveIPv6 := len(globalIPv6Addresses()) > 0 && !candidateListHasType(candidates, "host6")
 	_, _ = a.wg("set", a.interfaceName, "peer", key, "remove")
+	if passiveIPv6 {
+		_, _ = a.wg("set", a.interfaceName, "peer", key, "persistent-keepalive", "0")
+	}
 	delay := recordProbeFailure(state, time.Now().Unix())
 	state.WorkerRunning = false
 	state.Endpoint = ""
 	state.SelectedType = ""
+	if passiveIPv6 {
+		state.Mode = "passive6"
+	}
 	a.mu.Unlock()
-	a.log("Candidate probe failed " + serverIP + "; retry in " + delay.String() + ".")
+	if passiveIPv6 {
+		a.log("Candidate probe failed " + serverIP + "; passive IPv6 listener armed; active retry in " + delay.String() + ".")
+	} else {
+		a.log("Candidate probe failed " + serverIP + "; retry in " + delay.String() + ".")
+	}
 }
 
 func (a *app) probeSnapshot(key string, generation int64) ([]Candidate, bool) {
