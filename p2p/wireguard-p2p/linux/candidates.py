@@ -157,7 +157,7 @@ def normalize_probe_candidate(value):
     }
 
 
-def select_probe_candidates(values, legacy_endpoint="", endpoint_type="WAN"):
+def select_probe_candidates(values, legacy_endpoint="", endpoint_type="WAN", allow_ipv6=True):
     allow_lan = str(endpoint_type).lower() in ("lan", "lan4")
     candidates = []
     for value in values or []:
@@ -166,6 +166,8 @@ def select_probe_candidates(values, legacy_endpoint="", endpoint_type="WAN"):
             continue
         if candidate["type"] == "lan4" and not allow_lan:
             continue
+        if candidate["type"] == "host6" and not allow_ipv6:
+            continue
         candidates.append(candidate)
 
     if legacy_endpoint:
@@ -173,7 +175,7 @@ def select_probe_candidates(values, legacy_endpoint="", endpoint_type="WAN"):
             endpoint, address, _port = parse_endpoint(legacy_endpoint)
             if allow_lan and address.version == 4 and address.is_private:
                 legacy_type = "lan4"
-            elif address.version == 6 and usable_global_ipv6(address):
+            elif address.version == 6 and usable_global_ipv6(address) and allow_ipv6:
                 legacy_type = "host6"
             elif address.version == 4:
                 legacy_type = "observed4"
