@@ -5,6 +5,7 @@ on:
     branches: [work/v7.10-generic-roles]
     paths:
       - 'tools/apply_v710_generic_roles.py'
+      - 'tools/fix_v710_stage.py'
       - '.github/workflows/stage-v710-generic-roles.yml'
 
 permissions:
@@ -25,7 +26,9 @@ jobs:
         with:
           go-version-file: p2p/wireguard-p2p-client/go.mod
       - name: Apply v7.10 generic role refactor
-        run: python tools/apply_v710_generic_roles.py
+        run: |
+          python tools/fix_v710_stage.py
+          python tools/apply_v710_generic_roles.py
       - name: Format Go
         run: gofmt -w p2p/wireguard-p2p-client/*.go
       - name: Validate Python and shell
