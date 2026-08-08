@@ -1,0 +1,51 @@
+name: stage-v77-update
+
+on:
+  push:
+    branches: [work/v7.7-one-command-update]
+    paths:
+      - 'tools/apply_v77_one_command_update.py'
+      - '.github/workflows/stage-v77-update.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/v7.7-one-command-update
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: p2p/wireguard-p2p-client/go.mod
+      - name: Apply v7.7 updater
+        run: python tools/apply_v77_one_command_update.py
+      - name: Format Go
+        run: gofmt -w p2p/wireguard-p2p-client/*.go
+      - name: Validate Python and shell
+        run: |
+          python -m compileall -q p2p/wireguard-p2p/linux p2p/wireguard-p2p/vps p2p/wireguard-p2p/manage
+          sh -n p2p/wireguard-p2p/linux/install_server.sh
+          sh -n p2p/wireguard-p2p/vps/install_vps.sh
+          python -m unittest discover -s p2p/wireguard-p2p/tests -v
+      - name: Test and cross-build client
+        working-directory: p2p/wireguard-p2p-client
+        run: |
+          go vet ./...
+          go test ./...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/wireguard-p2p.exe .
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/wireguard-p2p-linux-amd64 .
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o /tmp/wireguard-p2p-linux-arm64 .
+      - name: Commit generated source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A p2p README.md
+          git commit -m 'feat: add one-command managed updates'
+          git push origin HEAD:work/v7.7-one-command-update
