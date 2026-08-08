@@ -34,7 +34,7 @@ from candidates import (
     usable_global_ipv6,
 )
 
-VERSION = "7.4.0"
+VERSION = "7.5.0"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
@@ -50,6 +50,8 @@ PROBE_POLL_INTERVAL = 0.25
 CONFIRMATION_REKEY_DELAY = 3.0
 CONFIRMATION_REKEY_WINDOW = 8.0
 SIMULTANEOUS_IPV6_WINDOW = 8.0
+SIMULTANEOUS_IPV4_WINDOW = 8.0
+PREDICTED_IPV4_WINDOW = 1.5
 ACTIVE_MONITOR_INTERVAL = 5
 DIRECT_MONITOR_INTERVAL = 30
 IDLE_MONITOR_INTERVAL = 60
@@ -440,12 +442,15 @@ def direct_peer_healthy(local, peer_ip, now=None):
 
 
 def candidate_probe_window(candidate):
-    if (
-        isinstance(candidate, dict)
-        and candidate.get("type") == "host6"
-        and not global_ipv6_addresses()
-    ):
+    if not isinstance(candidate, dict):
+        return CANDIDATE_PROBE_WINDOW
+    candidate_type = candidate.get("type")
+    if candidate_type == "host6" and not global_ipv6_addresses():
         return SIMULTANEOUS_IPV6_WINDOW
+    if candidate_type == "observed4":
+        return SIMULTANEOUS_IPV4_WINDOW
+    if candidate_type == "predicted4":
+        return PREDICTED_IPV4_WINDOW
     return CANDIDATE_PROBE_WINDOW
 
 def should_confirmation_rekey(candidate):
@@ -643,6 +648,10 @@ def probe_worker(key, generation):
     for candidate in candidates:
         if not probe_generation_current(key, generation):
             return
+        if candidate.get("type") == "observed4":
+            log("Simultaneous IPv4 punch {} via {}".format(peer_ip, candidate.get("endpoint", "")))
+        elif candidate.get("type") == "predicted4":
+            log("Bounded IPv4 port prediction {} via {}".format(peer_ip, candidate.get("endpoint", "")))
         local = local_wg_peers().get(key, {})
         baseline = int(local.get("latest_handshake", 0) or 0)
 
@@ -702,6 +711,7 @@ def probe_worker(key, generation):
                     candidate_type_for_endpoint(
                         state.get("candidates", []), actual_endpoint
                     )
+                    or observed_type_for_endpoint(actual_endpoint)
                     or candidate["type"]
                 )
                 wg_set(
@@ -883,7 +893,7 @@ def handle_offer(data):
                     candidate_endpoint_exists(
                         candidates, local.get("endpoint", "")
                     )
-                    or observed_type_for_endpoint(local.get("endpoint", "")) == "observed6"
+                    or observed_type_for_endpoint(local.get("endpoint", "")) in ("observed6", "observed4")
                 )
             ):
                 state.update({

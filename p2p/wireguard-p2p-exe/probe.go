@@ -10,13 +10,21 @@ const (
 	probePollInterval      = 250 * time.Millisecond
 	probeKeepalive         = 1
 	simultaneousIPv6Window = 8 * time.Second
+	simultaneousIPv4Window = 8 * time.Second
+	predictedIPv4Window    = 1500 * time.Millisecond
 )
 
 func probeWindowForCandidate(candidate Candidate) time.Duration {
-	if candidate.Type == "reflexive6" {
+	switch candidate.Type {
+	case "reflexive6":
 		return simultaneousIPv6Window
+	case "observed4":
+		return simultaneousIPv4Window
+	case "predicted4":
+		return predictedIPv4Window
+	default:
+		return candidateProbeWindow
 	}
-	return candidateProbeWindow
 }
 
 func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
@@ -84,7 +92,8 @@ func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 			state.WorkerRunning = false
 
 			if direct && local.LatestHandshake > 0 && now-local.LatestHandshake <= int64(directMaxAge/time.Second) &&
-				(candidateEndpointExists(candidates, local.Endpoint) || observedTypeForEndpoint(local.Endpoint) == "observed6") {
+				(candidateEndpointExists(candidates, local.Endpoint) ||
+					(observedTypeForEndpoint(local.Endpoint) == "observed6" || observedTypeForEndpoint(local.Endpoint) == "observed4")) {
 				state.Mode = "direct"
 				state.Endpoint = local.Endpoint
 				state.SelectedType = candidateTypeForEndpoint(candidates, local.Endpoint)
@@ -204,6 +213,10 @@ func (a *app) runProbeWorker(key, serverIP string, generation int64) {
 		}
 		if candidate.Type == "reflexive6" {
 			a.log("Simultaneous IPv6 punch " + serverIP + " via " + candidate.Endpoint + ".")
+		} else if candidate.Type == "observed4" {
+			a.log("Simultaneous IPv4 punch " + serverIP + " via " + candidate.Endpoint + ".")
+		} else if candidate.Type == "predicted4" {
+			a.log("Bounded IPv4 port prediction " + serverIP + " via " + candidate.Endpoint + ".")
 		}
 		local, _ := a.localPeer(key)
 		baseline := local.LatestHandshake

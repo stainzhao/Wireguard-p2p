@@ -68,3 +68,10 @@ Agent 校验时间窗口、随机 nonce 和重放缓存。旧 session 不能覆�
 - reflexive6：600 秒刷新，1800 秒缓存 TTL。
 - mapped4 daemon：60 秒后台检查，仅在映射建立/续租/变化/失效时更新 RAM 状态。
 - NAT/stateful 路径继续使用 `PersistentKeepalive=25`。
+
+
+## IPv4 direct path (v7.5)
+
+IPv4 direct traversal uses the actual WireGuard socket mapping observed by the VPS. `mapped4` remains preferred when PCP/NAT-PMP/UPnP succeeds. Otherwise both endpoints hold an overlapping 8-second `observed4` probe window; promotion still requires a fresh authenticated WireGuard handshake.
+
+For sequential/port-preserving symmetric NATs, the coordinator may synthesize at most four `predicted4` candidates at observed-port offsets `-2,-1,+1,+2`. The public IPv4 address is never guessed: it must come from the VPS-verified WireGuard endpoint. Nodes cannot self-advertise `observed4` or `predicted4`. Predictions are skipped when a stable `mapped4` exists. Random endpoint-dependent NAT still falls back to the unchanged VPS `/24` relay.

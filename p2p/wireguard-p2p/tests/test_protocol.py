@@ -54,7 +54,7 @@ class CandidateProtocolTests(unittest.TestCase):
         candidate = api.observed_candidate("8.8.8.8:51820")
         self.assertEqual(candidate["type"], "observed4")
         self.assertTrue(candidate["verified"])
-        self.assertEqual(candidate["priority"], 600)
+        self.assertEqual(candidate["priority"], 700)
 
     def test_peer_payload_merges_legacy_and_v7_candidates(self):
         now = time.time()
@@ -83,7 +83,7 @@ class CandidateProtocolTests(unittest.TestCase):
             }
         result = api.peer_payload([dict(peer)])[0]
         types = [item["type"] for item in result["candidates"]]
-        self.assertEqual(types, ["lan4", "host6", "observed4"])
+        self.assertEqual(types, ["lan4", "host6", "observed4", "predicted4", "predicted4", "predicted4", "predicted4"])
         self.assertEqual(result["lan_endpoint"], "192.168.1.13:58442")
 
     def test_linux_candidate_helpers(self):

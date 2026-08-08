@@ -100,3 +100,8 @@ P2P_VERBOSE_LOG=1
 ```
 
 不要长期启用 verbose 输出。
+
+
+## IPv4 P2P diagnostics
+
+With Windows console output enabled, an IPv4 rendezvous attempt can show `Simultaneous IPv4 punch ... via A.B.C.D:PORT`. If the VPS-observed port does not work, up to four same-IP bounded predictions may be attempted. `P2P OK ... via observed4` confirms a fresh authenticated direct handshake. Failure removes the dynamic `/32` peer and leaves the VPS `/24` relay intact. No additional public STUN/observer port is required by v7.5.

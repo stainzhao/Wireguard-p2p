@@ -13,8 +13,8 @@ const (
 	candidatePriorityObserved6  = 850
 	candidatePriorityReflexive6 = 825
 	candidatePriorityMapped4    = 800
-	candidatePriorityObserved4  = 600
-	candidatePriorityPredict4   = 400
+	candidatePriorityObserved4  = 700
+	candidatePriorityPredict4   = 500
 	maxProbeCandidates          = 5
 )
 

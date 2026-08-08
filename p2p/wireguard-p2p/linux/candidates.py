@@ -13,8 +13,8 @@ PRIORITY = {
     "observed6": 850,
     "reflexive6": 825,
     "mapped4": 800,
-    "observed4": 600,
-    "predicted4": 400,
+    "observed4": 700,
+    "predicted4": 500,
 }
 MAX_PROBE_CANDIDATES = 5
 PORTMAP_STATE_FILE = os.environ.get(

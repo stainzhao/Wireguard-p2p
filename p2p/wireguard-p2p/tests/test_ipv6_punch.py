@@ -22,8 +22,8 @@ api = load_module("api_ipv6", ROOT / "vps" / "peers_api.py")
 
 class IPv6PunchTests(unittest.TestCase):
     def test_current_release_versions_match(self):
-        self.assertEqual(agent.VERSION, "7.4.0")
-        self.assertEqual(api.VERSION, "7.4.0")
+        self.assertEqual(agent.VERSION, "7.5.0")
+        self.assertEqual(api.VERSION, "7.5.0")
 
     def test_confirmation_rekey_only_for_nat66_server_to_host6(self):
         original = agent.global_ipv6_addresses

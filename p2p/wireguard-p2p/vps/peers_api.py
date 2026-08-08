@@ -16,7 +16,7 @@ import time
 import urllib.request
 import uuid
 
-VERSION = "7.4.0"
+VERSION = "7.5.0"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
 AGENT_PORT = 8898
@@ -145,9 +145,9 @@ def validate_candidates(values, allow_observed=False):
         return []
     if not isinstance(values, list) or len(values) > MAX_CANDIDATES:
         raise ValueError("invalid candidates")
-    allowed_types = {"lan4", "host6", "reflexive6", "mapped4", "predicted4"}
+    allowed_types = {"lan4", "host6", "reflexive6", "mapped4"}
     if allow_observed:
-        allowed_types.add("observed4")
+        allowed_types.update(("observed4", "predicted4"))
     result = []
     seen = set()
     for value in values:
@@ -212,9 +212,39 @@ def observed_candidate(endpoint):
         "type": "observed4",
         "family": "udp4",
         "endpoint": normalized,
-        "priority": 600,
+        "priority": 700,
         "verified": True,
     }
+
+
+PREDICTED4_DELTAS = (-2, -1, 1, 2)
+
+
+def predicted_candidates(endpoint):
+    """Generate a tiny same-IP neighborhood from a VPS-verified WG endpoint.
+
+    This is deliberately bounded.  It is useful for sequential/port-preserving
+    symmetric NATs, but never scans arbitrary addresses or the whole UDP range.
+    """
+    try:
+        _normalized, address, port = parse_endpoint(endpoint)
+    except (TypeError, ValueError):
+        return []
+    if address.version != 4 or not address.is_global or address.is_private:
+        return []
+    result = []
+    for delta in PREDICTED4_DELTAS:
+        candidate_port = port + delta
+        if not 1 <= candidate_port <= 65535:
+            continue
+        result.append({
+            "type": "predicted4",
+            "family": "udp4",
+            "endpoint": "{}:{}".format(address.compressed, candidate_port),
+            "priority": 500,
+            "verified": False,
+        })
+    return result
 
 
 def merge_candidates(*groups):
@@ -301,10 +331,15 @@ def peer_payload(peers=None):
                 peer["lan_seen"] = 0
                 legacy_lan = []
             stored = NODE_CANDIDATES.get(peer["ip"], {}).get("candidates", [])
+            observed = observed_candidate(peer.get("endpoint", ""))
+            predictions = [] if any(
+                item.get("type") == "mapped4" for item in stored
+            ) else predicted_candidates(peer.get("endpoint", ""))
             peer["candidates"] = merge_candidates(
                 legacy_lan,
                 stored,
-                [observed_candidate(peer.get("endpoint", ""))],
+                [observed],
+                predictions,
             )
     return peers
 
@@ -399,10 +434,15 @@ def push_offer(server, client, client_lan_endpoint, client_candidates, session_i
                 legacy_lan = [lan_candidate(address.compressed, port)]
         except ValueError:
             pass
+    observed = observed_candidate(client.get("endpoint", ""))
+    predictions = [] if any(
+        item.get("type") == "mapped4" for item in client_candidates
+    ) else predicted_candidates(client.get("endpoint", ""))
     candidates = merge_candidates(
         legacy_lan,
         client_candidates,
-        [observed_candidate(client.get("endpoint", ""))],
+        [observed],
+        predictions,
     )
     return signed_post(server["ip"], "/offer", {
         "protocol": 7,

@@ -1,6 +1,6 @@
 # WireGuard P2P
 
-当前生产实现：**v7.4.0**。仓库 `main` 只保留当前实现，不再保存历史版本源码、迁移脚本、旧协议文档或编译后的 Windows EXE。
+当前生产实现：**v7.5.0**。仓库 `main` 只保留当前实现，不再保存历史版本源码、迁移脚本、旧协议文档或编译后的 Windows EXE。
 
 ## 目标
 
@@ -59,3 +59,8 @@ Windows 二进制**不提交到 Git**，每次 `main` CI 通过后从 GitHub Act
 5. 上传 Windows artifact。
 
 历史实现只存在于 Git 历史/备份分支中，不再出现在当前源码树。
+
+
+### IPv4 simultaneous direct
+
+v7.5 adds an 8-second simultaneous `observed4` WireGuard punch and bounded same-IP port prediction for sequential symmetric NAT. `mapped4` remains preferred and the VPS `/24` relay remains the connectivity baseline.
