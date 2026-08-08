@@ -17,8 +17,12 @@ jobs:
         run: |
           test ! -e p2p/wireguard-p2p/linux/p2p_sync.py
           test ! -e p2p/wireguard-p2p/linux/wireguard-p2p-sync.service
-          test ! -e p2p/wireguard-p2p-exe/wireguard-p2p.exe
+          test ! -e p2p/wireguard-p2p-exe
           test ! -e p2p/wireguard-p2p/journald-wireguard-p2p.conf
+          if find p2p -type f -name '*.exe' -print -quit | grep -q .; then
+            echo 'compiled Windows EXE must not be tracked'
+            exit 1
+          fi
           if find . -type d -name __pycache__ -print -quit | grep -q .; then
             echo 'tracked/generated __pycache__ is not allowed'
             exit 1
@@ -28,34 +32,62 @@ jobs:
       - name: Run Python tests
         run: python -m unittest discover -s p2p/wireguard-p2p/tests -v
 
-  windows:
+  client:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: p2p/wireguard-p2p-exe/go.mod
-          cache-dependency-path: p2p/wireguard-p2p-exe/go.mod
+          go-version-file: p2p/wireguard-p2p-client/go.mod
+          cache-dependency-path: p2p/wireguard-p2p-client/go.mod
       - name: Check gofmt
-        working-directory: p2p/wireguard-p2p-exe
+        working-directory: p2p/wireguard-p2p-client
         run: test -z "$(gofmt -l .)"
-      - name: Vet
-        working-directory: p2p/wireguard-p2p-exe
+      - name: Vet shared client
+        working-directory: p2p/wireguard-p2p-client
         run: go vet ./...
-      - name: Test
-        working-directory: p2p/wireguard-p2p-exe
+      - name: Test shared client on Linux
+        working-directory: p2p/wireguard-p2p-client
         run: go test ./...
       - name: Build Windows amd64
-        working-directory: p2p/wireguard-p2p-exe
-        env:
-          GOOS: windows
-          GOARCH: amd64
-          CGO_ENABLED: '0'
-        run: go build -trimpath -o wireguard-p2p.exe .
+        working-directory: p2p/wireguard-p2p-client
+        run: |
+          mkdir -p dist/windows-amd64
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o dist/windows-amd64/wireguard-p2p.exe .
+      - name: Build Linux amd64 package
+        working-directory: p2p/wireguard-p2p-client
+        run: |
+          mkdir -p dist/linux-amd64/package
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o dist/linux-amd64/package/wireguard-p2p .
+          cp deploy/linux/install.sh deploy/linux/uninstall.sh deploy/linux/wireguard-p2p-client.service dist/linux-amd64/package/
+          chmod 0755 dist/linux-amd64/package/wireguard-p2p dist/linux-amd64/package/install.sh dist/linux-amd64/package/uninstall.sh
+          tar -C dist/linux-amd64/package -czf dist/wireguard-p2p-linux-amd64.tar.gz .
+      - name: Build Linux arm64 package
+        working-directory: p2p/wireguard-p2p-client
+        run: |
+          mkdir -p dist/linux-arm64/package
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o dist/linux-arm64/package/wireguard-p2p .
+          cp deploy/linux/install.sh deploy/linux/uninstall.sh deploy/linux/wireguard-p2p-client.service dist/linux-arm64/package/
+          chmod 0755 dist/linux-arm64/package/wireguard-p2p dist/linux-arm64/package/install.sh dist/linux-arm64/package/uninstall.sh
+          tar -C dist/linux-arm64/package -czf dist/wireguard-p2p-linux-arm64.tar.gz .
       - name: Upload Windows client
         uses: actions/upload-artifact@v4
         with:
           name: wireguard-p2p-windows-amd64
-          path: p2p/wireguard-p2p-exe/wireguard-p2p.exe
+          path: p2p/wireguard-p2p-client/dist/windows-amd64/wireguard-p2p.exe
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Linux amd64 client
+        uses: actions/upload-artifact@v4
+        with:
+          name: wireguard-p2p-linux-amd64
+          path: p2p/wireguard-p2p-client/dist/wireguard-p2p-linux-amd64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Linux arm64 client
+        uses: actions/upload-artifact@v4
+        with:
+          name: wireguard-p2p-linux-arm64
+          path: p2p/wireguard-p2p-client/dist/wireguard-p2p-linux-arm64.tar.gz
           if-no-files-found: error
           retention-days: 14
