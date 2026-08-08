@@ -49,6 +49,6 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A p2p README.md .github/workflows/ci.yml
+          git add -A p2p README.md
           git commit -m 'feat: add cross-platform Linux P2P client'
           git push origin HEAD:work/v7.6-linux-client
