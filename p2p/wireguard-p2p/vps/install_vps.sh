@@ -10,7 +10,8 @@ install -m 0644 "$SCRIPT_DIR/peers-api.service" /etc/systemd/system/peers-api.se
 install -m 0755 "$MANAGER_DIR/wireguard-p2p.py" /usr/local/bin/wireguard-p2p
 install -d -m 0700 /etc/wireguard-p2p
 systemctl daemon-reload
-systemctl enable --now peers-api.service
+systemctl enable peers-api.service
+systemctl restart peers-api.service
 cat <<'EOF'
 Installed managed VPS updater.
 For this private GitHub repository, configure a read-only token once:

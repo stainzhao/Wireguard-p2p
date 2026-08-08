@@ -47,7 +47,8 @@ if ! wg show "$INTERFACE" >/dev/null 2>&1; then
 fi
 
 systemctl daemon-reload
-systemctl enable --now wireguard-p2p-client.service
+systemctl enable wireguard-p2p-client.service
+systemctl restart wireguard-p2p-client.service
 sleep 1
 systemctl --no-pager --full status wireguard-p2p-client.service || true
 

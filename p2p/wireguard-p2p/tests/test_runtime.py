@@ -48,8 +48,8 @@ class RuntimeTests(unittest.TestCase):
         }
 
     def test_release_and_resource_constants(self):
-        self.assertEqual(agent.VERSION, "7.7.0")
-        self.assertEqual(api.VERSION, "7.7.0")
+        self.assertEqual(agent.VERSION, "7.7.1")
+        self.assertEqual(api.VERSION, "7.7.1")
         self.assertEqual(agent.DIRECT_MONITOR_INTERVAL, 30)
         self.assertEqual(agent.IDLE_MONITOR_INTERVAL, 60)
         self.assertEqual(agent.REFLEXIVE6_REFRESH_INTERVAL, 600)
@@ -147,6 +147,16 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(manager.exists())
         text = manager.read_text(encoding="utf-8")
         self.assertIn("sudo wireguard-p2p update", text if "sudo wireguard-p2p update" in text else "sudo wireguard-p2p update")
+
+
+    def test_managed_installers_restart_existing_services(self):
+        client_installer = (ROOT.parent / "wireguard-p2p-client" / "deploy" / "linux" / "install.sh").read_text(encoding="utf-8")
+        server_installer = (LINUX / "install_server.sh").read_text(encoding="utf-8")
+        vps_installer = (ROOT / "vps" / "install_vps.sh").read_text(encoding="utf-8")
+        self.assertIn("systemctl restart wireguard-p2p-client.service", client_installer)
+        self.assertIn("systemctl restart wireguard-p2p-agent.service", server_installer)
+        self.assertIn("systemctl restart wireguard-p2p-portmap.service", server_installer)
+        self.assertIn("systemctl restart peers-api.service", vps_installer)
 
 
 if __name__ == "__main__":
