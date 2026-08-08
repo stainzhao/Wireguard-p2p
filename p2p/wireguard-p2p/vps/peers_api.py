@@ -16,7 +16,7 @@ import time
 import urllib.request
 import uuid
 
-VERSION = "7.5.0"
+VERSION = "7.6.0"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
 AGENT_PORT = 8898

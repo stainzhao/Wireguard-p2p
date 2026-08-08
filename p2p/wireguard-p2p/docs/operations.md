@@ -1,31 +1,68 @@
 # Operations
 
-本文档只面向当前 v7.4.0 实现。
+本文档只面向当前 **v7.6.0** 实现。
 
-## 1. 运行组件
+## 1. 运行角色
 
 ```text
 VPS:
   peers_api.py
   peers-api.service
 
-Linux server:
+Linux P2P server (.2/.5):
   p2p_agent.py
   candidates.py
-  portmap.py
-  portmap_daemon.py
+  portmap.py / portmap_daemon.py
   wireguard-p2p-agent.service
   wireguard-p2p-portmap.service
 
-Windows:
-  GitHub Actions artifact: wireguard-p2p-windows-amd64
+Windows client:
+  artifact wireguard-p2p-windows-amd64
+
+Linux client:
+  artifact wireguard-p2p-linux-amd64 或 wireguard-p2p-linux-arm64
+  wireguard-p2p-client.service
 ```
 
-旧 `p2p_sync.py` 与 `wireguard-p2p-sync.service` 已退出当前架构。
+Linux client 和 Linux server 是不同角色：普通客户端运行 Go binary；只有 `.2/.5` 运行 Python Server Agent。
 
-## 2. Linux 低写入运行态
+## 2. Linux client 快速部署
 
-当前临时状态：
+前置条件：
+
+```text
+systemd
+wireguard-tools
+已配置并可用的 WireGuard wg0
+到 VPS 10.0.0.1 的基线连接
+```
+
+下载与 CPU 架构匹配的 artifact，解压其中的 `wireguard-p2p-linux-*.tar.gz`，再解包：
+
+```bash
+tar -xzf wireguard-p2p-linux-amd64.tar.gz
+sudo ./install.sh --interface wg0
+```
+
+ARM64 使用对应 arm64 包。安装后：
+
+```bash
+systemctl status wireguard-p2p-client.service
+journalctl -u wireguard-p2p-client.service -n 50 --no-pager
+wg show wg0
+```
+
+卸载：
+
+```bash
+sudo ./uninstall.sh
+```
+
+安装/卸载均不会修改 `/etc/wireguard/`、WireGuard key、VPS peer 或 `AllowedIPs=10.0.0.0/24`。
+
+## 3. Linux server 低写入运行态
+
+`.2/.5` 临时状态继续位于：
 
 ```text
 /run/wireguard-p2p/state.json
@@ -33,28 +70,25 @@ Windows:
 /run/wireguard-p2p/*.lock
 ```
 
-`/run` 通常由 tmpfs 提供。文件是覆盖式小快照，不会随 uptime 持续累积，也不要求持久化 `fsync()`。
+Python Server Agent routine stdout 默认丢弃，stderr 才进入 journal。Linux Go client 的日志主要是连接状态变化与错误，由 systemd journal 接收。
 
-当前 systemd unit 使用：
+## 4. 常用检查
 
-```ini
-StandardOutput=null
-StandardError=journal
-LogRateLimitIntervalSec=5min
-LogRateLimitBurst=20
+Linux client：
+
+```bash
+systemctl status wireguard-p2p-client.service
+wg show wg0
+ping 10.0.0.2
+ping 10.0.0.5
 ```
 
-正常事件不进入 journal；真正 stderr 错误仍可诊断。systemd 自身启停记录仍可能出现在 journal。
-
-## 3. 常用检查
-
-Linux Agent：
+Linux server：
 
 ```bash
 systemctl status wireguard-p2p-agent.service
 curl http://10.0.0.5:8898/health
 wg show wg0
-ls -lh /run/wireguard-p2p
 ```
 
 VPS：
@@ -64,44 +98,8 @@ systemctl status peers-api.service
 curl http://10.0.0.1:8899/health
 ```
 
-port mapping：
+## 5. 更新原则
 
-```bash
-systemctl status wireguard-p2p-portmap.service
-cat /run/wireguard-p2p/mapped4.json
-```
+建议顺序仍为：VPS -> `.2/.5` Server Agent -> clients。协议 7 的 `/24` relay 基线始终保留。
 
-## 4. 当前部署更新原则
-
-建议顺序：VPS -> Linux server -> Windows。控制面/Agent 版本先更新后再替换 Windows artifact，可减少滚动升级期间的行为差异。
-
-Windows EXE 不从仓库源码目录获取，只使用 `main` CI 成功后的 Actions artifact。
-
-## 5. 一次性清理旧 Linux 部署
-
-确认当前 `wireguard-p2p-agent.service` 已正常运行后，可清理早期 synchronizer：
-
-```bash
-sudo systemctl disable --now wireguard-p2p-sync.service 2>/dev/null || true
-sudo rm -f /etc/systemd/system/wireguard-p2p-sync.service
-sudo rm -f /opt/wireguard-p2p/p2p_sync.py
-sudo rm -f /var/lib/wireguard-p2p/state.json
-sudo systemctl daemon-reload
-```
-
-这些文件不属于当前架构。
-
-## 6. 调试
-
-生产 unit 默认丢弃 stdout。需要详细诊断时，可临时在 shell 中运行 Agent 并设置：
-
-```bash
-P2P_VERBOSE_LOG=1
-```
-
-不要长期启用 verbose 输出。
-
-
-## IPv4 P2P diagnostics
-
-With Windows console output enabled, an IPv4 rendezvous attempt can show `Simultaneous IPv4 punch ... via A.B.C.D:PORT`. If the VPS-observed port does not work, up to four same-IP bounded predictions may be attempted. `P2P OK ... via observed4` confirms a fresh authenticated direct handshake. Failure removes the dynamic `/32` peer and leaves the VPS `/24` relay intact. No additional public STUN/observer port is required by v7.5.
+Windows 与 Linux clients 使用同一 Go core，因此同一个 release 的 P2P 行为应保持一致。Linux amd64/arm64 只区别 CPU 架构。

@@ -70,8 +70,15 @@ Agent 校验时间窗口、随机 nonce 和重放缓存。旧 session 不能覆�
 - NAT/stateful 路径继续使用 `PersistentKeepalive=25`。
 
 
-## IPv4 direct path (v7.5)
+## IPv4 direct path (v7.6)
 
 IPv4 direct traversal uses the actual WireGuard socket mapping observed by the VPS. `mapped4` remains preferred when PCP/NAT-PMP/UPnP succeeds. Otherwise both endpoints hold an overlapping 8-second `observed4` probe window; promotion still requires a fresh authenticated WireGuard handshake.
 
 For sequential/port-preserving symmetric NATs, the coordinator may synthesize at most four `predicted4` candidates at observed-port offsets `-2,-1,+1,+2`. The public IPv4 address is never guessed: it must come from the VPS-verified WireGuard endpoint. Nodes cannot self-advertise `observed4` or `predicted4`. Predictions are skipped when a stable `mapped4` exists. Random endpoint-dependent NAT still falls back to the unchanged VPS `/24` relay.
+
+
+## Cross-platform clients
+
+v7.6 将原 Windows-only Go 程序收敛为共享 client core。Windows 和 Linux 复用相同的 `/connect`、Candidate 排序、probe、fresh-handshake promotion、Direct health 和 Relay fallback；系统差异只存在于 platform/console 文件。Linux amd64 与 arm64 由同一源码交叉编译。
+
+普通 Linux client 的角色与 Windows client 相同，不运行 `.2/.5` 的 Python Server Agent。Linux Server Agent 仍只负责被连接的 server 节点和 VPS `/offer` 接收。

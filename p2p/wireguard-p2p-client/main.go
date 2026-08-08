@@ -9,9 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +17,7 @@ import (
 )
 
 const (
-	version          = "7.5.0"
+	version          = "7.6.0"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
@@ -93,22 +91,21 @@ func main() {
 	preferred := flag.String("interface", "wg0", "preferred WireGuard interface name")
 	flag.Parse()
 	if !acquireSingleInstance() {
-		fmt.Println("WireGuard P2P is already running.")
-		waitForEnter()
+		fmt.Println("WireGuard P2P client is already running or the runtime lock is unavailable.")
+		platformPauseOnFatal()
 		return
 	}
 
-	if oldTaskExists() {
-		fmt.Println("Old scheduled task 'WireGuard P2P Sync' still exists.")
-		fmt.Println("Run remove_old_powershell_task.ps1 as Administrator, then start this EXE again.")
-		waitForEnter()
+	if err := legacyClientConflict(); err != nil {
+		fmt.Println(err)
+		platformPauseOnFatal()
 		return
 	}
 
-	wgPath := filepath.Join(os.Getenv("ProgramFiles"), "WireGuard", "wg.exe")
-	if _, err := os.Stat(wgPath); err != nil {
-		fmt.Printf("WireGuard wg.exe was not found: %s\n", wgPath)
-		waitForEnter()
+	wgPath, err := resolveWGExecutable()
+	if err != nil {
+		fmt.Println(err)
+		platformPauseOnFatal()
 		return
 	}
 
@@ -125,14 +122,14 @@ func main() {
 	shutdown, cleanupDone := installConsoleCloseHandler()
 	defer close(cleanupDone)
 
-	fmt.Printf("WireGuard P2P %s is running. Close this window or press Ctrl+C to stop.\n", version)
+	fmt.Printf("WireGuard P2P %s client is running on %s. Press Ctrl+C to stop.\n", version, platformLabel())
 	fmt.Println("VPS relay remains available while direct candidates are tested in the background.")
 
 	var next time.Duration
 	for {
 		select {
 		case <-shutdown:
-			a.log("Stopping: removing dynamic GPU/2696 peers...")
+			a.log("Stopping: removing dynamic direct server peers...")
 			a.cleanup()
 			a.disconnect()
 			a.log("Stopped. VPS fallback remains active.")
@@ -174,18 +171,6 @@ func main() {
 		}
 		next = a.loopInterval()
 	}
-}
-
-func oldTaskExists() bool {
-	cmd := exec.Command("schtasks.exe", "/Query", "/TN", "WireGuard P2P Sync")
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	return cmd.Run() == nil
-}
-
-func waitForEnter() {
-	fmt.Println("Press Enter to close.")
-	_, _ = fmt.Scanln()
 }
 
 func (a *app) log(message string) {

@@ -1,0 +1,37 @@
+[Unit]
+Description=WireGuard P2P cross-platform client
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=P2P_INTERFACE=wg0
+EnvironmentFile=-/etc/default/wireguard-p2p-client
+ExecStart=/usr/local/bin/wireguard-p2p --interface=${P2P_INTERFACE}
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+RuntimeDirectory=wireguard-p2p-client
+RuntimeDirectoryMode=0755
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
