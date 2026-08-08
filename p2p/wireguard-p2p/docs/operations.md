@@ -1,6 +1,6 @@
 # Operations
 
-本文档只面向当前 **v7.7.1** 实现。
+本文档只面向当前 **v7.8.0** 实现。
 
 ## 1. 运行角色
 
@@ -114,3 +114,22 @@ sudo wireguard-p2p update
 ```
 
 适用于 VPS、Linux Server Agent 和 Linux Client。Windows 使用 `wireguard-p2p.exe update`。VPS 是唯一访问私有 GitHub Release 的节点，并把通过 SHA-256 校验的当前发布物缓存到 `/var/lib/wireguard-p2p/updates/current`；其余节点只从 WireGuard overlay 的 `10.0.0.1:8899/updates/` 下载。`--force` 可重装同版本。
+
+
+## 6. 一行首次部署
+
+VPS 首次部署使用 README 中的私有 GitHub bootstrap 命令；它通过安全输入的只读 Token 下载并校验最新 VPS Release，安装后立即执行一次 `wireguard-p2p update --force`，从而把所有客户端/Server 包和 bootstrap 脚本缓存到 VPS。
+
+随后 `.2/.5`：
+
+```bash
+curl -fsSL http://10.0.0.1:8899/updates/bootstrap-linux-server.sh | sudo sh
+```
+
+普通 Linux Client：
+
+```bash
+curl -fsSL http://10.0.0.1:8899/updates/bootstrap-linux-client.sh | sudo sh
+```
+
+首次安装与后续更新都不修改 WireGuard 密钥、VPS peer 或 `/24` relay baseline。Server 的 HMAC `notify.key` 只允许固定 overlay 身份 `10.0.0.2/10.0.0.5` 通过 WireGuard 内网领取。

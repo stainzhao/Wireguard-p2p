@@ -1,6 +1,6 @@
 # WireGuard P2P
 
-当前生产实现：**v7.7.1**。协议仍为 7，VPS `10.0.0.0/24` relay 基线保持不变。
+当前生产实现：**v7.8.0**。协议仍为 7，VPS `10.0.0.0/24` relay 基线保持不变。
 
 ## 角色
 
@@ -84,3 +84,26 @@ Windows Client：
 ```
 
 更新分发采用 `GitHub Release -> VPS 私有缓存 -> WireGuard 节点`。私有 GitHub 的只读凭据只保存在 VPS；普通客户端和 `.2/.5` 不保存 GitHub Token。VPS 在切换 coordinator 前会验证所有发布物 SHA-256 并缓存到 `/var/lib/wireguard-p2p/updates/current`，其他节点只通过 `10.0.0.1:8899/updates/` 获取经过清单校验的包。失败时保留或恢复旧版本；WireGuard 配置、密钥和 `/24` relay baseline 不参与更新。
+
+
+## 真正的一行首次部署（v7.8+）
+
+VPS（私有仓库，因此命令会安全提示输入一次 GitHub 只读 Token；Token 不出现在 shell history）：
+
+```bash
+read -rsp 'GitHub read token: ' T; echo; curl -fsSL -H "Authorization: Bearer $T" -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/stainzhao/p2p/contents/p2p/wireguard-p2p/bootstrap/bootstrap-vps.py?ref=main' | sudo env P2P_GITHUB_TOKEN="$T" python3 -
+```
+
+`.2/.5` Linux P2P Server（只要求现有 WireGuard `wg0` 已经能到 `10.0.0.1`）：
+
+```bash
+curl -fsSL http://10.0.0.1:8899/updates/bootstrap-linux-server.sh | sudo sh
+```
+
+普通 Linux Client：
+
+```bash
+curl -fsSL http://10.0.0.1:8899/updates/bootstrap-linux-client.sh | sudo sh
+```
+
+Server 安装器会从 `wg0` 自动识别 `.2/.5`，统一使用专用 `wireguard-p2p` system user；若本机尚无 `notify.key`，只允许 `.2/.5` 通过 WireGuard overlay 从 VPS 获取。Client 自动识别 amd64/arm64。首次部署完成后，所有 Linux 角色继续统一使用 `sudo wireguard-p2p update`。

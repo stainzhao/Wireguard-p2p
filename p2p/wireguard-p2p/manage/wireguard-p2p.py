@@ -14,7 +14,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "7.7.1"
+VERSION = "7.8.0"
 API_BASE = "http://10.0.0.1:8899"
 GITHUB_REPO = os.environ.get("P2P_GITHUB_REPO", "stainzhao/p2p")
 TOKEN_FILE = Path(os.environ.get("P2P_GITHUB_TOKEN_FILE", "/etc/wireguard-p2p/github.token"))
@@ -283,6 +283,17 @@ def update_vps(force=False):
         data = release_asset_bytes(release_meta, headers)
         verify_asset(data, meta)
         downloads[file_name] = data
+
+    sums_meta = release_assets.get("SHA256SUMS")
+    if not sums_meta:
+        raise RuntimeError("release is missing SHA256SUMS")
+    sums_data = release_asset_bytes(sums_meta, headers)
+    sums_lines = set(sums_data.decode("utf-8").splitlines())
+    for meta in manifest_assets.values():
+        expected = "{}  {}".format(meta.get("sha256", ""), meta.get("file", ""))
+        if expected not in sums_lines:
+            raise RuntimeError("SHA256SUMS does not match manifest for " + meta.get("file", "asset"))
+    downloads["SHA256SUMS"] = sums_data
 
     with tempfile.TemporaryDirectory(prefix="wireguard-p2p-vps-update-") as tmp:
         root = Path(tmp)
