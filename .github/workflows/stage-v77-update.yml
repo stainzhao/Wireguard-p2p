@@ -25,7 +25,9 @@ jobs:
         with:
           go-version-file: p2p/wireguard-p2p-client/go.mod
       - name: Apply v7.7 updater
-        run: python tools/apply_v77_one_command_update.py
+        run: |
+          python tools/apply_v77_one_command_update.py
+          sed -i 's/self\.api\.update_asset_path/api.update_asset_path/g' p2p/wireguard-p2p/tests/test_runtime.py
       - name: Format Go
         run: gofmt -w p2p/wireguard-p2p-client/*.go
       - name: Validate Python and shell
