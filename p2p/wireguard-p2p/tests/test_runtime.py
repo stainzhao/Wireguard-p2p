@@ -48,8 +48,8 @@ class RuntimeTests(unittest.TestCase):
         }
 
     def test_release_and_resource_constants(self):
-        self.assertEqual(agent.VERSION, "7.8.0")
-        self.assertEqual(api.VERSION, "7.8.0")
+        self.assertEqual(agent.VERSION, "7.9.0")
+        self.assertEqual(api.VERSION, "7.9.0")
         self.assertEqual(agent.DIRECT_MONITOR_INTERVAL, 30)
         self.assertEqual(agent.IDLE_MONITOR_INTERVAL, 60)
         self.assertEqual(agent.REFLEXIVE6_REFRESH_INTERVAL, 600)
@@ -135,7 +135,7 @@ class RuntimeTests(unittest.TestCase):
         with mock.patch.object(api, "signed_post", return_value={"ok": True}) as signed:
             api.push_remove(session, reason="expired")
         payloads = [call.args[2] for call in signed.call_args_list]
-        self.assertEqual(len(payloads), len(api.SERVER_IPS))
+        self.assertEqual(len(payloads), len(api.server_ips()))
         self.assertTrue(all(item["reason"] == "expired" for item in payloads))
 
 
@@ -174,7 +174,8 @@ class RuntimeTests(unittest.TestCase):
         for name in ("bootstrap-linux-client.sh", "bootstrap-linux-server.sh", "bootstrap-vps.py"):
             self.assertTrue((root / name).is_file())
         server_installer = (LINUX / "install_server.sh").read_text(encoding="utf-8")
-        self.assertIn("10.0.0.2|10.0.0.5", server_installer)
+        self.assertIn("10.0.0.*", server_installer)
+        self.assertIn("wireguard-p2p server add", server_installer)
         self.assertIn("/bootstrap/server-key", server_installer)
 
 

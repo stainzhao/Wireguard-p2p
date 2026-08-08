@@ -2,6 +2,7 @@
 """One-command updater for WireGuard P2P VPS and Linux server roles."""
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -14,7 +15,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "7.8.0"
+VERSION = "7.9.0"
 API_BASE = "http://10.0.0.1:8899"
 GITHUB_REPO = os.environ.get("P2P_GITHUB_REPO", "stainzhao/p2p")
 TOKEN_FILE = Path(os.environ.get("P2P_GITHUB_TOKEN_FILE", "/etc/wireguard-p2p/github.token"))
@@ -22,6 +23,10 @@ INSTALL_ROOT = Path("/opt/wireguard-p2p")
 MANAGER_PATH = Path("/usr/local/bin/wireguard-p2p")
 SYSTEMD_ROOT = Path("/etc/systemd/system")
 UPDATE_STATE = Path("/var/lib/wireguard-p2p")
+SERVER_REGISTRY_FILE = Path(os.environ.get("P2P_SERVER_REGISTRY_FILE", "/etc/wireguard-p2p/servers.conf"))
+DEFAULT_SERVER_IPS = {"10.0.0.2", "10.0.0.5"}
+RESERVED_SERVER_IPS = {"10.0.0.1", "10.0.0.8"}
+OVERLAY_NETWORK = ipaddress.ip_network("10.0.0.0/24")
 
 
 def no_proxy_opener():
@@ -353,6 +358,73 @@ def update_vps(force=False):
             raise
 
 
+
+def validate_server_ip(value):
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        raise RuntimeError("invalid server overlay IP: " + str(value))
+    normalized = str(address)
+    if (
+        address.version != 4
+        or address not in OVERLAY_NETWORK
+        or address in (OVERLAY_NETWORK.network_address, OVERLAY_NETWORK.broadcast_address)
+        or normalized in RESERVED_SERVER_IPS
+    ):
+        raise RuntimeError("server IP must be an eligible 10.0.0.x address; 10.0.0.1 and 10.0.0.8 are reserved")
+    return normalized
+
+
+def read_server_registry():
+    try:
+        lines = SERVER_REGISTRY_FILE.read_text(encoding="utf-8").splitlines()
+        values = {line.split("#", 1)[0].strip() for line in lines}
+        return {validate_server_ip(value) for value in values if value}
+    except FileNotFoundError:
+        return set(DEFAULT_SERVER_IPS)
+
+
+def write_server_registry(values):
+    values = {validate_server_ip(value) for value in values}
+    SERVER_REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = SERVER_REGISTRY_FILE.with_name(SERVER_REGISTRY_FILE.name + ".tmp")
+    ordered = sorted(values, key=lambda value: int(ipaddress.ip_address(value)))
+    temporary.write_text("".join(value + "\n" for value in ordered), encoding="utf-8")
+    os.chmod(temporary, 0o640)
+    try:
+        shutil.chown(temporary, user="root", group="wireguard-p2p")
+    except LookupError:
+        pass
+    os.replace(temporary, SERVER_REGISTRY_FILE)
+
+
+def manage_servers(arguments):
+    action = arguments[0] if arguments else "list"
+    values = read_server_registry()
+    if action == "list":
+        for value in sorted(values, key=lambda item: int(ipaddress.ip_address(item))):
+            print(value)
+        return
+    if action not in ("add", "remove") or len(arguments) != 2:
+        raise RuntimeError("usage: wireguard-p2p server [list|add <10.0.0.x>|remove <10.0.0.x>]")
+    address = validate_server_ip(arguments[1])
+    if action == "add":
+        if address in values:
+            print("Server {} is already authorized.".format(address))
+        else:
+            values.add(address)
+            write_server_registry(values)
+            print("Authorized P2P server {}.".format(address))
+        print("On {} run:".format(address))
+        print("curl -fsSL http://10.0.0.1:8899/updates/bootstrap-linux-server.sh | sudo sh")
+        return
+    if address not in values:
+        print("Server {} is not authorized.".format(address))
+        return
+    values.remove(address)
+    write_server_registry(values)
+    print("Revoked P2P server {}. Existing direct sessions age out normally; stop its Agent if the role is being removed.".format(address))
+
 def show_status(role):
     print("role: {}".format(role))
     print("version: {}".format(installed_version(role)))
@@ -363,10 +435,10 @@ def show_status(role):
 
 
 def main():
-    if os.geteuid() != 0 and len(sys.argv) > 1 and sys.argv[1] == "update":
-        raise RuntimeError("run update with sudo")
-    role = detect_role()
     command = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if os.geteuid() != 0 and command in ("update", "server"):
+        raise RuntimeError("run this command with sudo")
+    role = detect_role()
     force = "--force" in sys.argv[2:]
     if command in ("version", "--version", "-version"):
         print(installed_version(role))
@@ -377,8 +449,12 @@ def main():
             update_vps(force=force)
         else:
             update_server(force=force)
+    elif command == "server":
+        if role != "vps":
+            raise RuntimeError("server authorization is managed on the VPS")
+        manage_servers(sys.argv[2:])
     else:
-        raise RuntimeError("usage: wireguard-p2p [version|status|update [--force]]")
+        raise RuntimeError("usage: wireguard-p2p [version|status|update [--force]|server [list|add IP|remove IP]]")
 
 
 if __name__ == "__main__":

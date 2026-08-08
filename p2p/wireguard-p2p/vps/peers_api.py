@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-VERSION = "7.8.0"
+VERSION = "7.9.0"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
 AGENT_PORT = 8898
@@ -30,23 +30,15 @@ MAX_CANDIDATES = 16
 NOTIFY_KEY_FILE = os.environ.get("P2P_NOTIFY_KEY_FILE", "/etc/wireguard-p2p/notify.key")
 UPDATE_DIR = os.environ.get("P2P_UPDATE_DIR", "/var/lib/wireguard-p2p/updates/current")
 UPDATE_MAX_FILE_SIZE = 128 * 1024 * 1024
-SERVER_IPS = {"10.0.0.2", "10.0.0.5"}
+DEFAULT_SERVER_IPS = {"10.0.0.2", "10.0.0.5"}
+SERVER_REGISTRY_FILE = os.environ.get("P2P_SERVER_REGISTRY_FILE", "/etc/wireguard-p2p/servers.conf")
 RELAY_ONLY_IPS = {"10.0.0.8"}
+OVERLAY_NETWORK = ipaddress.ip_network("10.0.0.0/24")
 
 LAN_CANDIDATES = {}
 NODE_CANDIDATES = {}
 SESSIONS = {}
-SERVER_PUSH_STATUS = {
-    server_ip: {
-        "ok": None,
-        "last_success": 0,
-        "last_error": 0,
-        "last_error_message": "",
-        "consecutive_failures": 0,
-        "last_error_log": 0,
-    }
-    for server_ip in SERVER_IPS
-}
+SERVER_PUSH_STATUS = {}
 STATE_LOCK = threading.Lock()
 COORDINATE_LOCK = threading.Lock()
 WG_QUERY_SLOTS = threading.BoundedSemaphore(4)
@@ -72,7 +64,7 @@ def record_push_result(server_ip, ok, error=""):
     now = time.time()
     message_to_log = ""
     with STATE_LOCK:
-        status = SERVER_PUSH_STATUS[server_ip]
+        status = SERVER_PUSH_STATUS.setdefault(server_ip, new_push_status())
         previous_failures = int(status.get("consecutive_failures", 0))
         if ok:
             status.update({
@@ -100,11 +92,48 @@ def record_push_result(server_ip, ok, error=""):
         log(message_to_log)
 
 
+def server_ips():
+    try:
+        with open(SERVER_REGISTRY_FILE, "r", encoding="utf-8") as handle:
+            raw = [line.split("#", 1)[0].strip() for line in handle]
+    except OSError:
+        raw = sorted(DEFAULT_SERVER_IPS)
+    result = set()
+    for value in raw:
+        if not value:
+            continue
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            continue
+        normalized = str(address)
+        if (
+            address.version == 4
+            and address in OVERLAY_NETWORK
+            and address not in (OVERLAY_NETWORK.network_address, OVERLAY_NETWORK.broadcast_address)
+            and normalized != LISTEN_ADDRESS
+            and normalized not in RELAY_ONLY_IPS
+        ):
+            result.add(normalized)
+    return result
+
+
+def new_push_status():
+    return {
+        "ok": None,
+        "last_success": 0,
+        "last_error": 0,
+        "last_error_message": "",
+        "consecutive_failures": 0,
+        "last_error_log": 0,
+    }
+
+
 def peer_role(overlay_ip):
-    if overlay_ip in SERVER_IPS:
-        return "server"
     if overlay_ip in RELAY_ONLY_IPS:
         return "relay_only"
+    if overlay_ip in server_ips():
+        return "server"
     return "client"
 
 
@@ -595,7 +624,7 @@ def push_remove(session, reason="disconnect"):
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_map = {
             executor.submit(signed_post, server_ip, "/remove", payload): server_ip
-            for server_ip in SERVER_IPS
+            for server_ip in server_ips()
         }
         for future, server_ip in future_map.items():
             try:
@@ -614,7 +643,7 @@ def disconnect_client(client):
         LAN_CANDIDATES.pop(client["ip"], None)
         NODE_CANDIDATES.pop(client["ip"], None)
         if not SESSIONS:
-            for server_ip in SERVER_IPS:
+            for server_ip in server_ips():
                 LAN_CANDIDATES.pop(server_ip, None)
                 NODE_CANDIDATES.pop(server_ip, None)
     if session:
@@ -636,7 +665,7 @@ def session_reaper():
                     LAN_CANDIDATES.pop(overlay_ip, None)
                     NODE_CANDIDATES.pop(overlay_ip, None)
             if not SESSIONS:
-                for server_ip in SERVER_IPS:
+                for server_ip in server_ips():
                     LAN_CANDIDATES.pop(server_ip, None)
                     NODE_CANDIDATES.pop(server_ip, None)
         for session in expired:
@@ -647,7 +676,7 @@ def session_reaper():
 
 
 def bootstrap_server_key(source_ip):
-    if source_ip not in SERVER_IPS:
+    if source_ip not in server_ips():
         raise PermissionError("server bootstrap key is restricted to server peers")
     if not NOTIFY_KEY or len(NOTIFY_KEY) < 32:
         raise RuntimeError("notification key unavailable")
