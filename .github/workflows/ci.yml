@@ -28,6 +28,7 @@ jobs:
           test -f p2p/wireguard-p2p/bootstrap/bootstrap-linux-client.sh
           test -f p2p/wireguard-p2p/bootstrap/bootstrap-linux-server.sh
           test -f p2p/wireguard-p2p/bootstrap/bootstrap-vps.py
+          test -f ci/test-python36.sh
           if find p2p -type f -name '*.exe' -print -quit | grep -q .; then
             echo 'compiled Windows EXE must not be tracked'
             exit 1
@@ -46,21 +47,17 @@ jobs:
           sh -n p2p/wireguard-p2p-client/deploy/linux/uninstall.sh
           sh -n p2p/wireguard-p2p/bootstrap/bootstrap-linux-client.sh
           sh -n p2p/wireguard-p2p/bootstrap/bootstrap-linux-server.sh
+          sh -n ci/test-python36.sh
           python -m py_compile p2p/wireguard-p2p/bootstrap/bootstrap-vps.py
       - name: Run Python tests
         run: python -m unittest discover -s p2p/wireguard-p2p/tests -v
 
   python36-compat:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.6.15'
-      - name: Compile production code on Python 3.6
-        run: python -m compileall -q p2p/wireguard-p2p/linux p2p/wireguard-p2p/vps p2p/wireguard-p2p/manage p2p/wireguard-p2p/bootstrap
-      - name: Run Python tests on Python 3.6
-        run: python -m unittest discover -s p2p/wireguard-p2p/tests -v
+      - name: Run pinned Python 3.6 compatibility suite
+        run: sh ci/test-python36.sh
 
   client:
     runs-on: ubuntu-latest
