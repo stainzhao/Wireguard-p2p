@@ -19,9 +19,9 @@ wg show "$WG_INTERFACE" >/dev/null 2>&1 || { echo "WireGuard interface '$WG_INTE
 
 OVERLAY_IP=$(ip -4 -o addr show dev "$WG_INTERFACE" | awk '$4 ~ /^10\.0\.0\./ {sub(/\/.*/, "", $4); print $4; exit}')
 case "$OVERLAY_IP" in
-    10.0.0.1|10.0.0.8|"") echo "Overlay IP '${OVERLAY_IP:-none}' cannot be used as a P2P server." >&2; exit 1 ;;
+    10.0.0.0|10.0.0.1|10.0.0.255|"") echo "Overlay IP '${OVERLAY_IP:-none}' cannot be used as a P2P server." >&2; exit 1 ;;
     10.0.0.*) ;;
-    *) echo "P2P server requires a 10.0.0.x overlay address; detected '${OVERLAY_IP:-none}'." >&2; exit 1 ;;
+    *) echo "P2P server requires an eligible 10.0.0.x overlay address; detected '${OVERLAY_IP:-none}'." >&2; exit 1 ;;
 esac
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -41,8 +41,7 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     useradd --system --home-dir /nonexistent --shell "$NOLOGIN" "$SERVICE_USER"
 fi
 install -d -m 0750 "$CONFIG_DIR"
-if [ ! -s "$KEY_FILE" ]; then
-    KEY_FILE="$KEY_FILE" OVERLAY_IP="$OVERLAY_IP" python3 - <<'PY'
+KEY_FILE="$KEY_FILE" OVERLAY_IP="$OVERLAY_IP" python3 - <<'PY'
 import os, urllib.error, urllib.request
 path = os.environ["KEY_FILE"]
 overlay_ip = os.environ["OVERLAY_IP"]
@@ -64,7 +63,6 @@ if len(data.strip()) < 32:
 with open(path, "wb") as handle:
     handle.write(data)
 PY
-fi
 chown "$SERVICE_USER:$SERVICE_USER" "$KEY_FILE"
 chmod 0400 "$KEY_FILE"
 

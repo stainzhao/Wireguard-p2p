@@ -2,6 +2,7 @@ import base64
 import importlib.util
 import os
 import pathlib
+import tempfile
 import time
 import unittest
 import uuid
@@ -48,8 +49,8 @@ class RuntimeTests(unittest.TestCase):
         }
 
     def test_release_and_resource_constants(self):
-        self.assertEqual(agent.VERSION, "7.9.0")
-        self.assertEqual(api.VERSION, "7.9.0")
+        self.assertEqual(agent.VERSION, "7.10.0")
+        self.assertEqual(api.VERSION, "7.10.0")
         self.assertEqual(agent.DIRECT_MONITOR_INTERVAL, 30)
         self.assertEqual(agent.IDLE_MONITOR_INTERVAL, 60)
         self.assertEqual(agent.REFLEXIVE6_REFRESH_INTERVAL, 600)
@@ -159,15 +160,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("systemctl restart peers-api.service", vps_installer)
 
     def test_server_bootstrap_key_is_overlay_restricted(self):
-        original = api.NOTIFY_KEY
-        try:
-            api.NOTIFY_KEY = b"x" * 32
-            self.assertEqual(api.bootstrap_server_key("10.0.0.2"), b"x" * 32 + b"\n")
-            self.assertEqual(api.bootstrap_server_key("10.0.0.5"), b"x" * 32 + b"\n")
-            with self.assertRaises(PermissionError):
-                api.bootstrap_server_key("10.0.0.3")
-        finally:
-            api.NOTIFY_KEY = original
+        original_key = api.NOTIFY_KEY
+        original_registry = api.SERVER_REGISTRY_FILE
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = pathlib.Path(tmp) / "servers.conf"
+            registry.write_text("10.0.0.8\n", encoding="utf-8")
+            try:
+                api.SERVER_REGISTRY_FILE = str(registry)
+                api.NOTIFY_KEY = b"x" * 32
+                self.assertEqual(api.bootstrap_server_key("10.0.0.8"), b"x" * 32 + b"\n")
+                with self.assertRaises(PermissionError):
+                    api.bootstrap_server_key("10.0.0.3")
+            finally:
+                api.SERVER_REGISTRY_FILE = original_registry
+                api.NOTIFY_KEY = original_key
 
     def test_one_line_bootstrap_assets_exist(self):
         root = ROOT / "bootstrap"

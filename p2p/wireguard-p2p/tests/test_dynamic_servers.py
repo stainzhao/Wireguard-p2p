@@ -17,61 +17,77 @@ api = load_module("dynamic_peers_api", ROOT / "vps" / "peers_api.py")
 manager = load_module("dynamic_manager", ROOT / "manage" / "wireguard-p2p.py")
 
 
-class DynamicServerTests(unittest.TestCase):
-    def test_missing_registry_keeps_legacy_servers(self):
-        old = api.SERVER_REGISTRY_FILE
+class GenericRoleTests(unittest.TestCase):
+    def test_missing_registries_have_no_magic_nodes(self):
+        old_server = api.SERVER_REGISTRY_FILE
+        old_relay = api.RELAY_ONLY_REGISTRY_FILE
         try:
-            api.SERVER_REGISTRY_FILE = "/definitely/missing/p2p-servers.conf"
-            self.assertEqual(api.peer_role("10.0.0.2"), "server")
-            self.assertEqual(api.peer_role("10.0.0.5"), "server")
+            api.SERVER_REGISTRY_FILE = "/definitely/missing/servers.conf"
+            api.RELAY_ONLY_REGISTRY_FILE = "/definitely/missing/relay-only.conf"
+            for value in ("10.0.0.2", "10.0.0.5", "10.0.0.8", "10.0.0.10"):
+                self.assertEqual(api.peer_role(value), "client")
         finally:
-            api.SERVER_REGISTRY_FILE = old
+            api.SERVER_REGISTRY_FILE = old_server
+            api.RELAY_ONLY_REGISTRY_FILE = old_relay
 
-    def test_registry_can_authorize_dot10_without_code_change(self):
-        old = api.SERVER_REGISTRY_FILE
+    def test_any_eligible_node_can_be_server_or_relay_only(self):
+        old_server = api.SERVER_REGISTRY_FILE
+        old_relay = api.RELAY_ONLY_REGISTRY_FILE
         with tempfile.TemporaryDirectory() as tmp:
-            registry = pathlib.Path(tmp) / "servers.conf"
-            registry.write_text("10.0.0.10\n", encoding="utf-8")
+            server = pathlib.Path(tmp) / "servers.conf"
+            relay = pathlib.Path(tmp) / "relay-only.conf"
+            server.write_text("10.0.0.8\n10.0.0.10\n", encoding="utf-8")
+            relay.write_text("10.0.0.20\n", encoding="utf-8")
             try:
-                api.SERVER_REGISTRY_FILE = str(registry)
+                api.SERVER_REGISTRY_FILE = str(server)
+                api.RELAY_ONLY_REGISTRY_FILE = str(relay)
+                self.assertEqual(api.peer_role("10.0.0.8"), "server")
                 self.assertEqual(api.peer_role("10.0.0.10"), "server")
+                self.assertEqual(api.peer_role("10.0.0.20"), "relay_only")
                 self.assertEqual(api.peer_role("10.0.0.2"), "client")
-                self.assertEqual(api.peer_role("10.0.0.8"), "relay_only")
             finally:
-                api.SERVER_REGISTRY_FILE = old
+                api.SERVER_REGISTRY_FILE = old_server
+                api.RELAY_ONLY_REGISTRY_FILE = old_relay
 
-    def test_bootstrap_key_is_only_for_authorized_servers(self):
+    def test_bootstrap_key_is_only_for_current_server_role(self):
         old_file = api.SERVER_REGISTRY_FILE
         old_key = api.NOTIFY_KEY
         with tempfile.TemporaryDirectory() as tmp:
             registry = pathlib.Path(tmp) / "servers.conf"
-            registry.write_text("10.0.0.10\n", encoding="utf-8")
+            registry.write_text("10.0.0.8\n", encoding="utf-8")
             try:
                 api.SERVER_REGISTRY_FILE = str(registry)
                 api.NOTIFY_KEY = b"x" * 32
-                self.assertEqual(api.bootstrap_server_key("10.0.0.10"), b"x" * 32 + b"\n")
+                self.assertEqual(api.bootstrap_server_key("10.0.0.8"), b"x" * 32 + b"\n")
                 with self.assertRaises(PermissionError):
                     api.bootstrap_server_key("10.0.0.4")
             finally:
                 api.SERVER_REGISTRY_FILE = old_file
                 api.NOTIFY_KEY = old_key
 
-    def test_manager_rejects_reserved_addresses(self):
-        self.assertEqual(manager.validate_server_ip("10.0.0.10"), "10.0.0.10")
-        for value in ("10.0.0.1", "10.0.0.8", "10.0.0.0", "10.0.0.255", "192.168.1.10"):
+    def test_dot8_is_not_reserved(self):
+        self.assertEqual(manager.validate_role_ip("10.0.0.8"), "10.0.0.8")
+        self.assertEqual(manager.validate_role_ip("10.0.0.10"), "10.0.0.10")
+        for value in ("10.0.0.1", "10.0.0.0", "10.0.0.255", "192.168.1.10"):
             with self.assertRaises(RuntimeError):
-                manager.validate_server_ip(value)
+                manager.validate_role_ip(value)
 
-    def test_manager_registry_round_trip(self):
-        old = manager.SERVER_REGISTRY_FILE
+    def test_role_switch_is_mutually_exclusive(self):
+        old_server = manager.SERVER_REGISTRY_FILE
+        old_relay = manager.RELAY_ONLY_REGISTRY_FILE
         with tempfile.TemporaryDirectory() as tmp:
-            registry = pathlib.Path(tmp) / "servers.conf"
             try:
-                manager.SERVER_REGISTRY_FILE = registry
-                manager.write_server_registry({"10.0.0.10", "10.0.0.2"})
-                self.assertEqual(manager.read_server_registry(), {"10.0.0.2", "10.0.0.10"})
+                manager.SERVER_REGISTRY_FILE = pathlib.Path(tmp) / "servers.conf"
+                manager.RELAY_ONLY_REGISTRY_FILE = pathlib.Path(tmp) / "relay-only.conf"
+                manager.set_node_role("10.0.0.8", "server")
+                self.assertEqual(manager.explicit_roles(), {"10.0.0.8": "server"})
+                manager.set_node_role("10.0.0.8", "relay_only")
+                self.assertEqual(manager.explicit_roles(), {"10.0.0.8": "relay_only"})
+                manager.set_node_role("10.0.0.8", "client")
+                self.assertEqual(manager.explicit_roles(), {})
             finally:
-                manager.SERVER_REGISTRY_FILE = old
+                manager.SERVER_REGISTRY_FILE = old_server
+                manager.RELAY_ONLY_REGISTRY_FILE = old_relay
 
     def test_go_client_discovers_server_role_dynamically(self):
         client_root = ROOT.parent / "wireguard-p2p-client"
@@ -79,8 +95,7 @@ class DynamicServerTests(unittest.TestCase):
         probe = (client_root / "probe.go").read_text(encoding="utf-8")
         self.assertIn('Role            string      `json:"role"`', main)
         self.assertIn('peer.Role == "server"', probe)
-        self.assertNotIn("YmAf+TDF3vM4QyOjPLbYu51owmIpqJt7osYugYtyhSg=", main)
-        self.assertNotIn("XTMmfyf2EWH7prfVCSkcWDOB5Lth5+F+OU8KsgtJhQQ=", main)
+        self.assertNotIn("serverKeys = map", main)
 
 
 if __name__ == "__main__":

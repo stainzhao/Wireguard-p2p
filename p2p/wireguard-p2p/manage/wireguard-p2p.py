@@ -15,7 +15,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "7.9.0"
+VERSION = "7.10.0"
 API_BASE = "http://10.0.0.1:8899"
 GITHUB_REPO = os.environ.get("P2P_GITHUB_REPO", "stainzhao/p2p")
 TOKEN_FILE = Path(os.environ.get("P2P_GITHUB_TOKEN_FILE", "/etc/wireguard-p2p/github.token"))
@@ -24,8 +24,8 @@ MANAGER_PATH = Path("/usr/local/bin/wireguard-p2p")
 SYSTEMD_ROOT = Path("/etc/systemd/system")
 UPDATE_STATE = Path("/var/lib/wireguard-p2p")
 SERVER_REGISTRY_FILE = Path(os.environ.get("P2P_SERVER_REGISTRY_FILE", "/etc/wireguard-p2p/servers.conf"))
-DEFAULT_SERVER_IPS = {"10.0.0.2", "10.0.0.5"}
-RESERVED_SERVER_IPS = {"10.0.0.1", "10.0.0.8"}
+RELAY_ONLY_REGISTRY_FILE = Path(os.environ.get("P2P_RELAY_ONLY_REGISTRY_FILE", "/etc/wireguard-p2p/relay-only.conf"))
+COORDINATOR_IP = "10.0.0.1"
 OVERLAY_NETWORK = ipaddress.ip_network("10.0.0.0/24")
 
 
@@ -359,35 +359,40 @@ def update_vps(force=False):
 
 
 
-def validate_server_ip(value):
+def validate_role_ip(value):
     try:
         address = ipaddress.ip_address(value)
     except ValueError:
-        raise RuntimeError("invalid server overlay IP: " + str(value))
+        raise RuntimeError("invalid overlay IP: " + str(value))
     normalized = str(address)
     if (
         address.version != 4
         or address not in OVERLAY_NETWORK
         or address in (OVERLAY_NETWORK.network_address, OVERLAY_NETWORK.broadcast_address)
-        or normalized in RESERVED_SERVER_IPS
+        or normalized == COORDINATOR_IP
     ):
-        raise RuntimeError("server IP must be an eligible 10.0.0.x address; 10.0.0.1 and 10.0.0.8 are reserved")
+        raise RuntimeError("role IP must be an eligible 10.0.0.x address; coordinator/network/broadcast addresses are not assignable")
     return normalized
 
 
-def read_server_registry():
+def validate_server_ip(value):
+    # Compatibility API retained for existing automation/tests.
+    return validate_role_ip(value)
+
+
+def read_role_registry(registry_file):
     try:
-        lines = SERVER_REGISTRY_FILE.read_text(encoding="utf-8").splitlines()
-        values = {line.split("#", 1)[0].strip() for line in lines}
-        return {validate_server_ip(value) for value in values if value}
+        lines = registry_file.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
-        return set(DEFAULT_SERVER_IPS)
+        return set()
+    values = {line.split("#", 1)[0].strip() for line in lines}
+    return {validate_role_ip(value) for value in values if value}
 
 
-def write_server_registry(values):
-    values = {validate_server_ip(value) for value in values}
-    SERVER_REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    temporary = SERVER_REGISTRY_FILE.with_name(SERVER_REGISTRY_FILE.name + ".tmp")
+def write_role_registry(registry_file, values):
+    values = {validate_role_ip(value) for value in values}
+    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary = registry_file.with_name(registry_file.name + ".tmp")
     ordered = sorted(values, key=lambda value: int(ipaddress.ip_address(value)))
     temporary.write_text("".join(value + "\n" for value in ordered), encoding="utf-8")
     os.chmod(temporary, 0o640)
@@ -395,35 +400,108 @@ def write_server_registry(values):
         shutil.chown(temporary, user="root", group="wireguard-p2p")
     except LookupError:
         pass
-    os.replace(temporary, SERVER_REGISTRY_FILE)
+    os.replace(temporary, registry_file)
+
+
+def read_server_registry():
+    return read_role_registry(SERVER_REGISTRY_FILE)
+
+
+def write_server_registry(values):
+    write_role_registry(SERVER_REGISTRY_FILE, values)
+
+
+def read_relay_only_registry():
+    return read_role_registry(RELAY_ONLY_REGISTRY_FILE)
+
+
+def write_relay_only_registry(values):
+    write_role_registry(RELAY_ONLY_REGISTRY_FILE, values)
+
+
+def set_node_role(address, role):
+    address = validate_role_ip(address)
+    if role not in ("client", "server", "relay_only"):
+        raise RuntimeError("role must be one of: client, server, relay_only")
+    servers = read_server_registry()
+    relay_only = read_relay_only_registry()
+    servers.discard(address)
+    relay_only.discard(address)
+    if role == "server":
+        servers.add(address)
+    elif role == "relay_only":
+        relay_only.add(address)
+    write_server_registry(servers)
+    write_relay_only_registry(relay_only)
+    return address
+
+
+def explicit_roles():
+    result = {address: "server" for address in read_server_registry()}
+    for address in read_relay_only_registry():
+        result[address] = "relay_only"
+    return result
 
 
 def manage_servers(arguments):
     action = arguments[0] if arguments else "list"
-    values = read_server_registry()
     if action == "list":
-        for value in sorted(values, key=lambda item: int(ipaddress.ip_address(item))):
+        for value in sorted(read_server_registry(), key=lambda item: int(ipaddress.ip_address(item))):
             print(value)
         return
     if action not in ("add", "remove") or len(arguments) != 2:
         raise RuntimeError("usage: wireguard-p2p server [list|add <10.0.0.x>|remove <10.0.0.x>]")
-    address = validate_server_ip(arguments[1])
+    address = validate_role_ip(arguments[1])
     if action == "add":
-        if address in values:
-            print("Server {} is already authorized.".format(address))
-        else:
-            values.add(address)
-            write_server_registry(values)
-            print("Authorized P2P server {}.".format(address))
+        set_node_role(address, "server")
+        print("Authorized P2P server {}.".format(address))
         print("On {} run:".format(address))
         print("curl -fsSL http://10.0.0.1:8899/updates/bootstrap-linux-server.sh | sudo sh")
         return
-    if address not in values:
+    if address not in read_server_registry():
         print("Server {} is not authorized.".format(address))
         return
-    values.remove(address)
-    write_server_registry(values)
-    print("Revoked P2P server {}. Existing direct sessions age out normally; stop its Agent if the role is being removed.".format(address))
+    set_node_role(address, "client")
+    print("Removed server role from {}. The node is now a normal client unless another role is assigned.".format(address))
+
+
+def manage_relay_only(arguments):
+    action = arguments[0] if arguments else "list"
+    if action == "list":
+        for value in sorted(read_relay_only_registry(), key=lambda item: int(ipaddress.ip_address(item))):
+            print(value)
+        return
+    if action not in ("add", "remove") or len(arguments) != 2:
+        raise RuntimeError("usage: wireguard-p2p relay-only [list|add <10.0.0.x>|remove <10.0.0.x>]")
+    address = validate_role_ip(arguments[1])
+    if action == "add":
+        set_node_role(address, "relay_only")
+        print("Assigned relay_only role to {}.".format(address))
+        return
+    if address not in read_relay_only_registry():
+        print("Node {} is not relay_only.".format(address))
+        return
+    set_node_role(address, "client")
+    print("Removed relay_only role from {}. The node is now a normal client.".format(address))
+
+
+def manage_roles(arguments):
+    action = arguments[0] if arguments else "list"
+    if action == "list":
+        roles = explicit_roles()
+        for address in sorted(roles, key=lambda item: int(ipaddress.ip_address(item))):
+            print("{} {}".format(address, roles[address]))
+        return
+    if action == "get" and len(arguments) == 2:
+        address = validate_role_ip(arguments[1])
+        print(explicit_roles().get(address, "client"))
+        return
+    if action == "set" and len(arguments) == 3:
+        address = set_node_role(arguments[1], arguments[2])
+        print("{} -> {}".format(address, arguments[2]))
+        return
+    raise RuntimeError("usage: wireguard-p2p role [list|get <IP>|set <IP> <client|server|relay_only>]")
+
 
 def show_status(role):
     print("role: {}".format(role))
@@ -436,7 +514,7 @@ def show_status(role):
 
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else "status"
-    if os.geteuid() != 0 and command in ("update", "server"):
+    if os.geteuid() != 0 and command in ("update", "server", "relay-only", "role"):
         raise RuntimeError("run this command with sudo")
     role = detect_role()
     force = "--force" in sys.argv[2:]
@@ -453,8 +531,16 @@ def main():
         if role != "vps":
             raise RuntimeError("server authorization is managed on the VPS")
         manage_servers(sys.argv[2:])
+    elif command == "relay-only":
+        if role != "vps":
+            raise RuntimeError("relay_only roles are managed on the VPS")
+        manage_relay_only(sys.argv[2:])
+    elif command == "role":
+        if role != "vps":
+            raise RuntimeError("node roles are managed on the VPS")
+        manage_roles(sys.argv[2:])
     else:
-        raise RuntimeError("usage: wireguard-p2p [version|status|update [--force]|server [list|add IP|remove IP]]")
+        raise RuntimeError("usage: wireguard-p2p [version|status|update [--force]|server ...|relay-only ...|role ...]")
 
 
 if __name__ == "__main__":
