@@ -1,0 +1,54 @@
+name: stage-v76-client
+
+on:
+  push:
+    branches: [work/v7.6-linux-client]
+    paths:
+      - 'tools/apply_v76_linux_client.py'
+      - '.github/workflows/stage-v76.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/v7.6-linux-client
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: p2p/wireguard-p2p-exe/go.mod
+      - name: Apply v7.6 refactor
+        run: python tools/apply_v76_linux_client.py
+      - name: Format Go
+        run: gofmt -w p2p/wireguard-p2p-client/*.go
+      - name: Python tests
+        run: |
+          python -m compileall -q p2p/wireguard-p2p/linux p2p/wireguard-p2p/vps
+          python -m unittest discover -s p2p/wireguard-p2p/tests -v
+      - name: Go tests and cross-platform builds
+        working-directory: p2p/wireguard-p2p-client
+        run: |
+          go vet ./...
+          go test ./...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/wireguard-p2p.exe .
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/wireguard-p2p-linux-amd64 .
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o /tmp/wireguard-p2p-linux-arm64 .
+      - name: Validate Linux package scripts
+        run: |
+          sh -n p2p/wireguard-p2p-client/deploy/linux/install.sh
+          sh -n p2p/wireguard-p2p-client/deploy/linux/uninstall.sh
+          grep -q 'AllowedIPs were not modified' p2p/wireguard-p2p-client/deploy/linux/install.sh
+      - name: Commit generated source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A p2p README.md .github/workflows/ci.yml
+          git commit -m 'feat: add cross-platform Linux P2P client'
+          git push origin HEAD:work/v7.6-linux-client
