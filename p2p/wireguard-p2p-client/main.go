@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	version          = "7.10.0"
+	version          = "7.10.1"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute

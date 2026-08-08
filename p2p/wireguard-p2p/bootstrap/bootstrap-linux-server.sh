@@ -15,4 +15,4 @@ awk -v f="$FILE" '$2 == f {print; found=1} END {if (!found) exit 1}' "$TMP/SHA25
 (cd "$TMP" && sha256sum -c check)
 mkdir "$TMP/pkg"
 tar -xzf "$TMP/$FILE" -C "$TMP/pkg"
-"$TMP/pkg/install_server.sh" --interface "$WG_INTERFACE"
+sh "$TMP/pkg/install_server.sh" --interface "$WG_INTERFACE"

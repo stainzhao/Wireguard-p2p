@@ -26,7 +26,7 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     useradd --system --home-dir /nonexistent --shell "$NOLOGIN" "$SERVICE_USER"
 fi
 install -d -m 0755 /opt/wireguard-p2p
-install -d -m 0750 "$CONFIG_DIR"
+install -d -o root -g "$SERVICE_USER" -m 0750 "$CONFIG_DIR"
 
 if [ ! -s "$KEY_FILE" ]; then
     KEY_FILE="$KEY_FILE" python3 - <<'PY'
@@ -61,4 +61,34 @@ install -m 0755 "$MANAGER" /usr/local/bin/wireguard-p2p
 systemctl daemon-reload
 systemctl enable peers-api.service
 systemctl restart peers-api.service
-printf 'Installed WireGuard P2P VPS. Future updates: sudo wireguard-p2p update\n'
+
+P2P_EXPECTED_VERSION=$(python3 - <<'PY'
+import re
+with open('/opt/wireguard-p2p/peers_api.py', 'r') as handle:
+    text = handle.read()
+match = re.search(r'^VERSION\s*=\s*["\']([^"\']+)', text, re.M)
+if not match:
+    raise SystemExit('cannot determine installed coordinator version')
+print(match.group(1))
+PY
+)
+P2P_EXPECTED_VERSION="$P2P_EXPECTED_VERSION" python3 - <<'PY'
+import json, os, time, urllib.request
+expected = os.environ['P2P_EXPECTED_VERSION']
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+last = None
+for _ in range(12):
+    try:
+        with opener.open('http://10.0.0.1:8899/health', timeout=2) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+        if payload.get('ok') and payload.get('version') == expected:
+            break
+        last = 'unexpected health payload: {!r}'.format(payload)
+    except Exception as exc:
+        last = str(exc)
+    time.sleep(1)
+else:
+    raise SystemExit('peers-api health check failed: {}'.format(last))
+PY
+systemctl is-active --quiet peers-api.service
+printf 'Installed WireGuard P2P VPS %s. Future updates: sudo wireguard-p2p update\n' "$P2P_EXPECTED_VERSION"

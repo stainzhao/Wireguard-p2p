@@ -24,6 +24,7 @@ agent = load_module("p2p_agent_runtime", LINUX / "p2p_agent.py")
 api = load_module("peers_api_runtime", ROOT / "vps" / "peers_api.py")
 daemon = load_module("portmap_daemon_runtime", LINUX / "portmap_daemon.py")
 candidates = load_module("candidates_runtime", LINUX / "candidates.py")
+manager = load_module("manager_runtime", ROOT / "manage" / "wireguard-p2p.py")
 
 
 class RuntimeTests(unittest.TestCase):
@@ -35,7 +36,7 @@ class RuntimeTests(unittest.TestCase):
 
     def _state(self, key, peer_ip="10.0.0.3"):
         session_id = str(uuid.uuid4())
-        state = agent.new_peer_state(peer_ip, session_id, time.time_ns())
+        state = agent.new_peer_state(peer_ip, session_id, agent.time_ns())
         state["lease_expires"] = time.time() + 120
         agent.STATES[key] = state
         return state, session_id
@@ -49,8 +50,8 @@ class RuntimeTests(unittest.TestCase):
         }
 
     def test_release_and_resource_constants(self):
-        self.assertEqual(agent.VERSION, "7.10.0")
-        self.assertEqual(api.VERSION, "7.10.0")
+        self.assertEqual(agent.VERSION, "7.10.1")
+        self.assertEqual(api.VERSION, "7.10.1")
         self.assertEqual(agent.DIRECT_MONITOR_INTERVAL, 30)
         self.assertEqual(agent.IDLE_MONITOR_INTERVAL, 60)
         self.assertEqual(agent.REFLEXIVE6_REFRESH_INTERVAL, 600)
@@ -158,6 +159,73 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("systemctl restart wireguard-p2p-agent.service", server_installer)
         self.assertIn("systemctl restart wireguard-p2p-portmap.service", server_installer)
         self.assertIn("systemctl restart peers-api.service", vps_installer)
+
+    def test_config_directory_is_traversable_by_service_account(self):
+        server_installer = (LINUX / "install_server.sh").read_text(encoding="utf-8")
+        vps_installer = (ROOT / "vps" / "install_vps.sh").read_text(encoding="utf-8")
+        for installer in (server_installer, vps_installer):
+            self.assertIn('install -d -o root -g "$SERVICE_USER" -m 0750 "$CONFIG_DIR"', installer)
+
+    def test_server_bootstrap_does_not_require_executable_archive_mode(self):
+        bootstrap = (ROOT / "bootstrap" / "bootstrap-linux-server.sh").read_text(encoding="utf-8")
+        self.assertIn('sh "$TMP/pkg/install_server.sh" --interface "$WG_INTERFACE"', bootstrap)
+
+    def test_python36_manager_compatibility(self):
+        source = (ROOT / "manage" / "wireguard-p2p.py").read_text(encoding="utf-8")
+        self.assertNotIn("missing_ok=True", source)
+        self.assertNotIn("text=True", source)
+        self.assertIn("universal_newlines=True", source)
+
+    def test_python36_time_ns_fallback(self):
+        agent_source = (LINUX / "p2p_agent.py").read_text(encoding="utf-8")
+        api_source = (ROOT / "vps" / "peers_api.py").read_text(encoding="utf-8")
+        self.assertNotIn("time.time_ns()", agent_source)
+        self.assertNotIn("time.time_ns()", api_source)
+        self.assertIsInstance(agent.time_ns(), int)
+        self.assertIsInstance(api.time_ns(), int)
+
+    def test_installers_verify_service_health_before_success(self):
+        server_installer = (LINUX / "install_server.sh").read_text(encoding="utf-8")
+        vps_installer = (ROOT / "vps" / "install_vps.sh").read_text(encoding="utf-8")
+        self.assertIn("8898/health", server_installer)
+        self.assertIn("systemctl is-active --quiet wireguard-p2p-agent.service", server_installer)
+        self.assertIn("systemctl is-active --quiet wireguard-p2p-portmap.service", server_installer)
+        self.assertIn("10.0.0.1:8899/health", vps_installer)
+        self.assertIn("systemctl is-active --quiet peers-api.service", vps_installer)
+
+    def test_manager_repairs_v7100_config_permissions(self):
+        old_config = manager.CONFIG_DIR
+        old_servers = manager.SERVER_REGISTRY_FILE
+        old_relay = manager.RELAY_ONLY_REGISTRY_FILE
+        with tempfile.TemporaryDirectory() as tmp:
+            config = pathlib.Path(tmp) / "wireguard-p2p"
+            config.mkdir(mode=0o700)
+            key = config / "notify.key"
+            servers = config / "servers.conf"
+            relay = config / "relay-only.conf"
+            key.write_text("x" * 64, encoding="ascii")
+            servers.write_text("10.0.0.2\n", encoding="ascii")
+            relay.write_text("", encoding="ascii")
+            os.chmod(key, 0o600)
+            os.chmod(servers, 0o600)
+            os.chmod(relay, 0o600)
+            try:
+                manager.CONFIG_DIR = config
+                manager.SERVER_REGISTRY_FILE = servers
+                manager.RELAY_ONLY_REGISTRY_FILE = relay
+                with mock.patch.object(manager.shutil, "chown") as chown:
+                    manager.repair_config_permissions("vps")
+                self.assertEqual(config.stat().st_mode & 0o777, 0o750)
+                self.assertEqual(key.stat().st_mode & 0o777, 0o400)
+                self.assertEqual(servers.stat().st_mode & 0o777, 0o640)
+                self.assertEqual(relay.stat().st_mode & 0o777, 0o640)
+                chown.assert_any_call(config, user="root", group="wireguard-p2p")
+                chown.assert_any_call(key, user="wireguard-p2p", group="wireguard-p2p")
+                chown.assert_any_call(servers, user="root", group="wireguard-p2p")
+            finally:
+                manager.CONFIG_DIR = old_config
+                manager.SERVER_REGISTRY_FILE = old_servers
+                manager.RELAY_ONLY_REGISTRY_FILE = old_relay
 
     def test_server_bootstrap_key_is_overlay_restricted(self):
         original_key = api.NOTIFY_KEY

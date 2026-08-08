@@ -34,7 +34,14 @@ from candidates import (
     usable_global_ipv6,
 )
 
-VERSION = "7.10.0"
+
+def time_ns():
+    native = getattr(time, "time_ns", None)
+    if native is not None:
+        return native()
+    return int(time.time() * 1000000000)
+
+VERSION = "7.10.1"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
@@ -236,7 +243,7 @@ def validate_session_started_ns(value):
     started = int(value)
     if started <= 0:
         raise ValueError("invalid session start")
-    if started > time.time_ns() + 60_000_000_000:
+    if started > time_ns() + 60_000_000_000:
         raise ValueError("session start is in the future")
     return started
 

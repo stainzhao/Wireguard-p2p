@@ -112,7 +112,7 @@ class SessionIsolationTests(unittest.TestCase):
         stale_session = str(uuid.uuid4())
         with agent.STATE_LOCK:
             agent.STATES[VALID_KEY] = agent.new_peer_state(
-                "10.0.0.4", current_session, time.time_ns()
+                "10.0.0.4", current_session, api.time_ns()
             )
         result = agent.handle_remove({
             "peer_key": VALID_KEY,
@@ -126,7 +126,7 @@ class SessionIsolationTests(unittest.TestCase):
     def test_late_old_offer_cannot_replace_new_session(self):
         current_session = str(uuid.uuid4())
         stale_session = str(uuid.uuid4())
-        current_started = time.time_ns()
+        current_started = api.time_ns()
         with agent.STATE_LOCK:
             agent.STATES[VALID_KEY] = agent.new_peer_state(
                 "10.0.0.4", current_session, current_started

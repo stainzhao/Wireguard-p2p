@@ -28,6 +28,7 @@ jobs:
           test -f p2p/wireguard-p2p/bootstrap/bootstrap-linux-client.sh
           test -f p2p/wireguard-p2p/bootstrap/bootstrap-linux-server.sh
           test -f p2p/wireguard-p2p/bootstrap/bootstrap-vps.py
+          test -f ci/test-python36.sh
           if find p2p -type f -name '*.exe' -print -quit | grep -q .; then
             echo 'compiled Windows EXE must not be tracked'
             exit 1
@@ -46,9 +47,17 @@ jobs:
           sh -n p2p/wireguard-p2p-client/deploy/linux/uninstall.sh
           sh -n p2p/wireguard-p2p/bootstrap/bootstrap-linux-client.sh
           sh -n p2p/wireguard-p2p/bootstrap/bootstrap-linux-server.sh
+          sh -n ci/test-python36.sh
           python -m py_compile p2p/wireguard-p2p/bootstrap/bootstrap-vps.py
       - name: Run Python tests
         run: python -m unittest discover -s p2p/wireguard-p2p/tests -v
+
+  python36-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run pinned Python 3.6 compatibility suite
+        run: sh ci/test-python36.sh
 
   client:
     runs-on: ubuntu-latest
@@ -112,7 +121,7 @@ jobs:
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [python, client]
+    needs: [python, python36-compat, client]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -150,6 +159,7 @@ jobs:
              p2p/wireguard-p2p/linux/install_server.sh \
              dist/server/
           cp p2p/wireguard-p2p/manage/wireguard-p2p.py dist/server/
+          chmod 0755 dist/server/install_server.sh
           tar -C dist/server -czf dist/release/wireguard-p2p-server.tar.gz .
 
           cp p2p/wireguard-p2p/vps/peers_api.py \
@@ -157,6 +167,7 @@ jobs:
              p2p/wireguard-p2p/vps/install_vps.sh \
              dist/vps/
           cp p2p/wireguard-p2p/manage/wireguard-p2p.py dist/vps/
+          chmod 0755 dist/vps/install_vps.sh
           tar -C dist/vps -czf dist/release/wireguard-p2p-vps.tar.gz .
 
           cp p2p/wireguard-p2p/bootstrap/bootstrap-linux-client.sh dist/release/
