@@ -82,7 +82,7 @@ ping -c 2 10.0.0.1
 
 ### 3.1 VPS / Coordinator 首次安装
 
-前提：VPS 已有 `wg0=10.0.0.1`，并安装 `python3`、`wireguard-tools`、`systemd`。
+前提：VPS 已有 `wg0=10.0.0.1`，并安装 **Python 3.6+**、`wireguard-tools`、`systemd`。v7.10.1 起 Manager 避免使用仅 Python 3.7/3.8+ 提供的 API。
 
 私有 GitHub 仓库首次输入只读 Token：
 
@@ -97,6 +97,8 @@ curl -fsS http://10.0.0.1:8899/health
 sudo wireguard-p2p version
 sudo wireguard-p2p role list
 ```
+
+安装器会在输出成功前轮询 `8899/health` 并确认 `peers-api.service` 仍为 active。
 
 **全新 v7.10 安装不会自动创建 `.2/.5/.8` 等任何角色。** 两个角色注册表初始为空。若从 v7.9 升级，已有 `servers.conf` 会被保留，因此旧 `.2/.5` Server 不会因升级丢失。
 
@@ -126,6 +128,7 @@ Server 安装器会：
 安装 Python Agent + port mapping
 安装 systemd services
 启动并重启服务
+安装结束前验证 Agent `8898/health`，并确认 Agent 与 portmap 两个 systemd 服务仍为 active；验证失败则安装命令返回失败，不再误报成功。
 ```
 
 因此 `.2`、`.5`、`.8`、`.10`、`.100` 的部署方式完全相同。IP 尾号不再进入源码逻辑。

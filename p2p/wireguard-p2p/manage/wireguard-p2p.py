@@ -57,6 +57,13 @@ def verify_asset(data, asset):
         raise RuntimeError("size verification failed for {}".format(asset.get("file", "asset")))
 
 
+def unlink_if_exists(path):
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        pass
+
+
 def safe_extract(data, target):
     target = Path(target).resolve()
     archive_path = target / "payload.tar.gz"
@@ -67,11 +74,11 @@ def safe_extract(data, target):
             if target != destination and target not in destination.parents:
                 raise RuntimeError("unsafe update archive path")
         archive.extractall(str(target))
-    archive_path.unlink(missing_ok=True)
+    unlink_if_exists(archive_path)
 
 
 def run(*args, check=True):
-    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, check=False)
     if check and result.returncode != 0:
         raise RuntimeError("{} failed: {}".format(" ".join(args), result.stdout.strip()))
     return result
@@ -347,7 +354,7 @@ def update_vps(force=False):
                 (release_dir / file_name).write_bytes(data)
             updates_root.mkdir(parents=True, exist_ok=True)
             next_link = updates_root / ".current-new"
-            next_link.unlink(missing_ok=True)
+            unlink_if_exists(next_link)
             os.symlink(str(release_dir), str(next_link))
             os.replace(str(next_link), str(current_link))
 
@@ -374,7 +381,7 @@ def update_vps(force=False):
             restore_files(backup)
             if old_current:
                 rollback_link = updates_root / ".current-rollback"
-                rollback_link.unlink(missing_ok=True)
+                unlink_if_exists(rollback_link)
                 os.symlink(old_current, rollback_link)
                 os.replace(str(rollback_link), str(current_link))
             systemctl("daemon-reload", check=False)

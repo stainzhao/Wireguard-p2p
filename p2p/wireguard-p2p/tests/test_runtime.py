@@ -164,8 +164,26 @@ class RuntimeTests(unittest.TestCase):
         server_installer = (LINUX / "install_server.sh").read_text(encoding="utf-8")
         vps_installer = (ROOT / "vps" / "install_vps.sh").read_text(encoding="utf-8")
         for installer in (server_installer, vps_installer):
-            self.assertIn('chown root:"$SERVICE_USER" "$CONFIG_DIR"', installer)
-            self.assertIn('chmod 0750 "$CONFIG_DIR"', installer)
+            self.assertIn('install -d -o root -g "$SERVICE_USER" -m 0750 "$CONFIG_DIR"', installer)
+
+    def test_server_bootstrap_does_not_require_executable_archive_mode(self):
+        bootstrap = (ROOT / "bootstrap" / "bootstrap-linux-server.sh").read_text(encoding="utf-8")
+        self.assertIn('sh "$TMP/pkg/install_server.sh" --interface "$WG_INTERFACE"', bootstrap)
+
+    def test_python36_manager_compatibility(self):
+        source = (ROOT / "manage" / "wireguard-p2p.py").read_text(encoding="utf-8")
+        self.assertNotIn("missing_ok=True", source)
+        self.assertNotIn("text=True", source)
+        self.assertIn("universal_newlines=True", source)
+
+    def test_installers_verify_service_health_before_success(self):
+        server_installer = (LINUX / "install_server.sh").read_text(encoding="utf-8")
+        vps_installer = (ROOT / "vps" / "install_vps.sh").read_text(encoding="utf-8")
+        self.assertIn("8898/health", server_installer)
+        self.assertIn("systemctl is-active --quiet wireguard-p2p-agent.service", server_installer)
+        self.assertIn("systemctl is-active --quiet wireguard-p2p-portmap.service", server_installer)
+        self.assertIn("10.0.0.1:8899/health", vps_installer)
+        self.assertIn("systemctl is-active --quiet peers-api.service", vps_installer)
 
     def test_manager_repairs_v7100_config_permissions(self):
         old_config = manager.CONFIG_DIR

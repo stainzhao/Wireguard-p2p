@@ -40,9 +40,7 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     [ -n "$NOLOGIN" ] || NOLOGIN=/usr/sbin/nologin
     useradd --system --home-dir /nonexistent --shell "$NOLOGIN" "$SERVICE_USER"
 fi
-install -d -m 0750 "$CONFIG_DIR"
-chown root:"$SERVICE_USER" "$CONFIG_DIR"
-chmod 0750 "$CONFIG_DIR"
+install -d -o root -g "$SERVICE_USER" -m 0750 "$CONFIG_DIR"
 KEY_FILE="$KEY_FILE" OVERLAY_IP="$OVERLAY_IP" python3 - <<'PY'
 import os, urllib.error, urllib.request
 path = os.environ["KEY_FILE"]
@@ -79,4 +77,37 @@ systemctl daemon-reload
 systemctl enable wireguard-p2p-agent.service wireguard-p2p-portmap.service
 systemctl restart wireguard-p2p-portmap.service
 systemctl restart wireguard-p2p-agent.service
-printf 'Installed managed P2P server %s. Future updates: sudo wireguard-p2p update\n' "$OVERLAY_IP"
+
+P2P_EXPECTED_VERSION=$(python3 - <<'PY'
+import re
+with open('/opt/wireguard-p2p/p2p_agent.py', 'r') as handle:
+    text = handle.read()
+match = re.search(r'^VERSION\s*=\s*["\']([^"\']+)', text, re.M)
+if not match:
+    raise SystemExit('cannot determine installed Agent version')
+print(match.group(1))
+PY
+)
+OVERLAY_IP="$OVERLAY_IP" P2P_EXPECTED_VERSION="$P2P_EXPECTED_VERSION" python3 - <<'PY'
+import json, os, time, urllib.request
+address = os.environ['OVERLAY_IP']
+expected = os.environ['P2P_EXPECTED_VERSION']
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+last = None
+url = 'http://{}:8898/health'.format(address)
+for _ in range(12):
+    try:
+        with opener.open(url, timeout=2) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+        if payload.get('ok') and payload.get('version') == expected:
+            break
+        last = 'unexpected health payload: {!r}'.format(payload)
+    except Exception as exc:
+        last = str(exc)
+    time.sleep(1)
+else:
+    raise SystemExit('P2P Agent health check failed: {}'.format(last))
+PY
+systemctl is-active --quiet wireguard-p2p-agent.service
+systemctl is-active --quiet wireguard-p2p-portmap.service
+printf 'Installed managed P2P server %s (%s). Future updates: sudo wireguard-p2p update\n' "$OVERLAY_IP" "$P2P_EXPECTED_VERSION"
