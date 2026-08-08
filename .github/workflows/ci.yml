@@ -50,6 +50,18 @@ jobs:
       - name: Run Python tests
         run: python -m unittest discover -s p2p/wireguard-p2p/tests -v
 
+  python36-compat:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.6.15'
+      - name: Compile production code on Python 3.6
+        run: python -m compileall -q p2p/wireguard-p2p/linux p2p/wireguard-p2p/vps p2p/wireguard-p2p/manage p2p/wireguard-p2p/bootstrap
+      - name: Run Python tests on Python 3.6
+        run: python -m unittest discover -s p2p/wireguard-p2p/tests -v
+
   client:
     runs-on: ubuntu-latest
     steps:
@@ -112,7 +124,7 @@ jobs:
 
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [python, client]
+    needs: [python, python36-compat, client]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -150,6 +162,7 @@ jobs:
              p2p/wireguard-p2p/linux/install_server.sh \
              dist/server/
           cp p2p/wireguard-p2p/manage/wireguard-p2p.py dist/server/
+          chmod 0755 dist/server/install_server.sh
           tar -C dist/server -czf dist/release/wireguard-p2p-server.tar.gz .
 
           cp p2p/wireguard-p2p/vps/peers_api.py \
@@ -157,6 +170,7 @@ jobs:
              p2p/wireguard-p2p/vps/install_vps.sh \
              dist/vps/
           cp p2p/wireguard-p2p/manage/wireguard-p2p.py dist/vps/
+          chmod 0755 dist/vps/install_vps.sh
           tar -C dist/vps -czf dist/release/wireguard-p2p-vps.tar.gz .
 
           cp p2p/wireguard-p2p/bootstrap/bootstrap-linux-client.sh dist/release/
