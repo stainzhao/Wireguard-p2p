@@ -62,6 +62,26 @@ class DynamicServerTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 manager.validate_server_ip(value)
 
+    def test_manager_registry_round_trip(self):
+        old = manager.SERVER_REGISTRY_FILE
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = pathlib.Path(tmp) / "servers.conf"
+            try:
+                manager.SERVER_REGISTRY_FILE = registry
+                manager.write_server_registry({"10.0.0.10", "10.0.0.2"})
+                self.assertEqual(manager.read_server_registry(), {"10.0.0.2", "10.0.0.10"})
+            finally:
+                manager.SERVER_REGISTRY_FILE = old
+
+    def test_go_client_discovers_server_role_dynamically(self):
+        client_root = ROOT.parent / "wireguard-p2p-client"
+        main = (client_root / "main.go").read_text(encoding="utf-8")
+        probe = (client_root / "probe.go").read_text(encoding="utf-8")
+        self.assertIn('Role            string      `json:"role"`', main)
+        self.assertIn('peer.Role == "server"', probe)
+        self.assertNotIn("YmAf+TDF3vM4QyOjPLbYu51owmIpqJt7osYugYtyhSg=", main)
+        self.assertNotIn("XTMmfyf2EWH7prfVCSkcWDOB5Lth5+F+OU8KsgtJhQQ=", main)
+
 
 if __name__ == "__main__":
     unittest.main()
