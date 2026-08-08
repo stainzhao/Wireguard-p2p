@@ -16,6 +16,7 @@ sed -e "s/__SERVICE_USER__/$SERVICE_USER/g" -e "s/__OVERLAY_IP__/$OVERLAY_IP/g" 
 sed -e "s/__SERVICE_USER__/$SERVICE_USER/g" -e "s/Environment=P2P_INTERFACE=wg0/Environment=P2P_INTERFACE=$WG_INTERFACE/" "$SCRIPT_DIR/wireguard-p2p-portmap.service" > /etc/systemd/system/wireguard-p2p-portmap.service
 install -m 0755 "$MANAGER_DIR/wireguard-p2p.py" /usr/local/bin/wireguard-p2p
 systemctl daemon-reload
-systemctl enable --now wireguard-p2p-agent.service
-systemctl enable --now wireguard-p2p-portmap.service
+systemctl enable wireguard-p2p-agent.service wireguard-p2p-portmap.service
+systemctl restart wireguard-p2p-portmap.service
+systemctl restart wireguard-p2p-agent.service
 printf 'Installed managed server. Future updates: sudo wireguard-p2p update\n'

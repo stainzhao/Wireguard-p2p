@@ -14,7 +14,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "7.7.0"
+VERSION = "7.7.1"
 API_BASE = "http://10.0.0.1:8899"
 GITHUB_REPO = os.environ.get("P2P_GITHUB_REPO", "stainzhao/p2p")
 TOKEN_FILE = Path(os.environ.get("P2P_GITHUB_TOKEN_FILE", "/etc/wireguard-p2p/github.token"))
