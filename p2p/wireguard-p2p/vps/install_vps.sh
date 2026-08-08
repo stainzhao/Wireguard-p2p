@@ -2,21 +2,52 @@
 set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "Run as root." >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required." >&2; exit 1; }
+command -v systemctl >/dev/null 2>&1 || { echo "systemd is required." >&2; exit 1; }
+command -v wg >/dev/null 2>&1 || { echo "wireguard-tools is required." >&2; exit 1; }
+command -v useradd >/dev/null 2>&1 || { echo "useradd is required." >&2; exit 1; }
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-MANAGER_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../manage" && pwd)
+if [ -f "$SCRIPT_DIR/../manage/wireguard-p2p.py" ]; then
+    MANAGER="$SCRIPT_DIR/../manage/wireguard-p2p.py"
+else
+    MANAGER="$SCRIPT_DIR/wireguard-p2p.py"
+fi
+SERVICE_USER=wireguard-p2p
+CONFIG_DIR=/etc/wireguard-p2p
+KEY_FILE="$CONFIG_DIR/notify.key"
+TOKEN_FILE="$CONFIG_DIR/github.token"
+
+if ! id "$SERVICE_USER" >/dev/null 2>&1; then
+    NOLOGIN=$(command -v nologin || true)
+    [ -n "$NOLOGIN" ] || NOLOGIN=/usr/sbin/nologin
+    useradd --system --home-dir /nonexistent --shell "$NOLOGIN" "$SERVICE_USER"
+fi
 install -d -m 0755 /opt/wireguard-p2p
+install -d -m 0750 "$CONFIG_DIR"
+
+if [ ! -s "$KEY_FILE" ]; then
+    KEY_FILE="$KEY_FILE" python3 - <<'PY'
+import os, secrets
+path = os.environ["KEY_FILE"]
+with open(path, "w", encoding="ascii") as handle:
+    handle.write(secrets.token_hex(32) + "\n")
+PY
+fi
+chown "$SERVICE_USER:$SERVICE_USER" "$KEY_FILE"
+chmod 0400 "$KEY_FILE"
+
+if [ -n "${P2P_GITHUB_TOKEN:-}" ]; then
+    umask 077
+    printf '%s\n' "$P2P_GITHUB_TOKEN" > "$TOKEN_FILE"
+    chown root:root "$TOKEN_FILE"
+    chmod 0600 "$TOKEN_FILE"
+fi
+
 install -m 0644 "$SCRIPT_DIR/peers_api.py" /opt/wireguard-p2p/peers_api.py
 install -m 0644 "$SCRIPT_DIR/peers-api.service" /etc/systemd/system/peers-api.service
-install -m 0755 "$MANAGER_DIR/wireguard-p2p.py" /usr/local/bin/wireguard-p2p
-install -d -m 0700 /etc/wireguard-p2p
+install -m 0755 "$MANAGER" /usr/local/bin/wireguard-p2p
 systemctl daemon-reload
 systemctl enable peers-api.service
 systemctl restart peers-api.service
-cat <<'EOF'
-Installed managed VPS updater.
-For this private GitHub repository, configure a read-only token once:
-  sudo sh -c 'umask 077; cat > /etc/wireguard-p2p/github.token'
-Then paste the token, press Enter, Ctrl+D.
-Future updates:
-  sudo wireguard-p2p update
-EOF
+printf 'Installed WireGuard P2P VPS. Future updates: sudo wireguard-p2p update\n'

@@ -34,7 +34,7 @@ from candidates import (
     usable_global_ipv6,
 )
 
-VERSION = "7.7.1"
+VERSION = "7.8.0"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))

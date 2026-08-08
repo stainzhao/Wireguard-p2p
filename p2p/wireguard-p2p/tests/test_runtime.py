@@ -48,8 +48,8 @@ class RuntimeTests(unittest.TestCase):
         }
 
     def test_release_and_resource_constants(self):
-        self.assertEqual(agent.VERSION, "7.7.1")
-        self.assertEqual(api.VERSION, "7.7.1")
+        self.assertEqual(agent.VERSION, "7.8.0")
+        self.assertEqual(api.VERSION, "7.8.0")
         self.assertEqual(agent.DIRECT_MONITOR_INTERVAL, 30)
         self.assertEqual(agent.IDLE_MONITOR_INTERVAL, 60)
         self.assertEqual(agent.REFLEXIVE6_REFRESH_INTERVAL, 600)
@@ -157,6 +157,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("systemctl restart wireguard-p2p-agent.service", server_installer)
         self.assertIn("systemctl restart wireguard-p2p-portmap.service", server_installer)
         self.assertIn("systemctl restart peers-api.service", vps_installer)
+
+    def test_server_bootstrap_key_is_overlay_restricted(self):
+        original = api.NOTIFY_KEY
+        try:
+            api.NOTIFY_KEY = b"x" * 32
+            self.assertEqual(api.bootstrap_server_key("10.0.0.2"), b"x" * 32 + b"\n")
+            self.assertEqual(api.bootstrap_server_key("10.0.0.5"), b"x" * 32 + b"\n")
+            with self.assertRaises(PermissionError):
+                api.bootstrap_server_key("10.0.0.3")
+        finally:
+            api.NOTIFY_KEY = original
+
+    def test_one_line_bootstrap_assets_exist(self):
+        root = ROOT / "bootstrap"
+        for name in ("bootstrap-linux-client.sh", "bootstrap-linux-server.sh", "bootstrap-vps.py"):
+            self.assertTrue((root / name).is_file())
+        server_installer = (LINUX / "install_server.sh").read_text(encoding="utf-8")
+        self.assertIn("10.0.0.2|10.0.0.5", server_installer)
+        self.assertIn("/bootstrap/server-key", server_installer)
 
 
 if __name__ == "__main__":

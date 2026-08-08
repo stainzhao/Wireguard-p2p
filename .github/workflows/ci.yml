@@ -25,6 +25,9 @@ jobs:
           test -f p2p/wireguard-p2p/manage/wireguard-p2p.py
           test -f p2p/wireguard-p2p/linux/install_server.sh
           test -f p2p/wireguard-p2p/vps/install_vps.sh
+          test -f p2p/wireguard-p2p/bootstrap/bootstrap-linux-client.sh
+          test -f p2p/wireguard-p2p/bootstrap/bootstrap-linux-server.sh
+          test -f p2p/wireguard-p2p/bootstrap/bootstrap-vps.py
           if find p2p -type f -name '*.exe' -print -quit | grep -q .; then
             echo 'compiled Windows EXE must not be tracked'
             exit 1
@@ -34,13 +37,16 @@ jobs:
             exit 1
           fi
       - name: Compile Python sources
-        run: python -m compileall -q p2p/wireguard-p2p/linux p2p/wireguard-p2p/vps p2p/wireguard-p2p/manage
+        run: python -m compileall -q p2p/wireguard-p2p/linux p2p/wireguard-p2p/vps p2p/wireguard-p2p/manage p2p/wireguard-p2p/bootstrap
       - name: Validate installers
         run: |
           sh -n p2p/wireguard-p2p/linux/install_server.sh
           sh -n p2p/wireguard-p2p/vps/install_vps.sh
           sh -n p2p/wireguard-p2p-client/deploy/linux/install.sh
           sh -n p2p/wireguard-p2p-client/deploy/linux/uninstall.sh
+          sh -n p2p/wireguard-p2p/bootstrap/bootstrap-linux-client.sh
+          sh -n p2p/wireguard-p2p/bootstrap/bootstrap-linux-server.sh
+          python -m py_compile p2p/wireguard-p2p/bootstrap/bootstrap-vps.py
       - name: Run Python tests
         run: python -m unittest discover -s p2p/wireguard-p2p/tests -v
 
@@ -141,15 +147,21 @@ jobs:
              p2p/wireguard-p2p/linux/portmap_daemon.py \
              p2p/wireguard-p2p/linux/wireguard-p2p-agent.service \
              p2p/wireguard-p2p/linux/wireguard-p2p-portmap.service \
+             p2p/wireguard-p2p/linux/install_server.sh \
              dist/server/
           cp p2p/wireguard-p2p/manage/wireguard-p2p.py dist/server/
           tar -C dist/server -czf dist/release/wireguard-p2p-server.tar.gz .
 
           cp p2p/wireguard-p2p/vps/peers_api.py \
              p2p/wireguard-p2p/vps/peers-api.service \
+             p2p/wireguard-p2p/vps/install_vps.sh \
              dist/vps/
           cp p2p/wireguard-p2p/manage/wireguard-p2p.py dist/vps/
           tar -C dist/vps -czf dist/release/wireguard-p2p-vps.tar.gz .
+
+          cp p2p/wireguard-p2p/bootstrap/bootstrap-linux-client.sh dist/release/
+          cp p2p/wireguard-p2p/bootstrap/bootstrap-linux-server.sh dist/release/
+          cp p2p/wireguard-p2p/bootstrap/bootstrap-vps.py dist/release/
 
           python - <<'PY'
           import hashlib, json, pathlib, re
@@ -162,6 +174,9 @@ jobs:
               'linux-arm64': 'wireguard-p2p-linux-arm64.tar.gz',
               'server-linux': 'wireguard-p2p-server.tar.gz',
               'vps-linux': 'wireguard-p2p-vps.tar.gz',
+              'bootstrap-linux-client': 'bootstrap-linux-client.sh',
+              'bootstrap-linux-server': 'bootstrap-linux-server.sh',
+              'bootstrap-vps': 'bootstrap-vps.py',
           }
           assets = {}
           for key, name in names.items():
@@ -173,7 +188,7 @@ jobs:
           PY
           VERSION=$(cat /tmp/p2p-version)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          sha256sum dist/release/* > dist/release/SHA256SUMS
+          (cd dist/release && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS)
       - name: Publish immutable version release
         env:
           GH_TOKEN: ${{ github.token }}

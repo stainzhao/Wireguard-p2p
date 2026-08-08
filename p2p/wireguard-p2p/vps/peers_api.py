@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-VERSION = "7.7.1"
+VERSION = "7.8.0"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
 AGENT_PORT = 8898
@@ -646,6 +646,14 @@ def session_reaper():
             push_remove(session, reason="expired")
 
 
+def bootstrap_server_key(source_ip):
+    if source_ip not in SERVER_IPS:
+        raise PermissionError("server bootstrap key is restricted to server peers")
+    if not NOTIFY_KEY or len(NOTIFY_KEY) < 32:
+        raise RuntimeError("notification key unavailable")
+    return NOTIFY_KEY + b"\n"
+
+
 def update_asset_path(request_path):
     prefix = "/updates/"
     if not request_path.startswith(prefix):
@@ -702,6 +710,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         try:
+            if self.path == "/bootstrap/server-key":
+                try:
+                    body = bootstrap_server_key(self.client_address[0])
+                except PermissionError as exc:
+                    self.send_json(403, {"error": str(exc)})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if self.path.startswith("/updates/"):
                 try:
                     path = update_asset_path(self.path)
