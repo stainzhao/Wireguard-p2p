@@ -1,6 +1,6 @@
 # WireGuard P2P
 
-当前生产实现：**v7.6.0**。协议仍为 7，VPS `10.0.0.0/24` relay 基线保持不变。
+当前生产实现：**v7.7.0**。协议仍为 7，VPS `10.0.0.0/24` relay 基线保持不变。
 
 ## 角色
 
@@ -67,3 +67,20 @@ p2p/wireguard-p2p/docs/              当前架构与运维文档
 ```
 
 编译后的二进制不提交进 Git，只由成功的 `main` CI 产出。
+
+
+## 一行更新（v7.7+）
+
+Linux VPS、`.2/.5` Server Agent、Linux Client 安装一次管理入口后，后续统一：
+
+```bash
+sudo wireguard-p2p update
+```
+
+Windows Client：
+
+```powershell
+.\wireguard-p2p.exe update
+```
+
+更新分发采用 `GitHub Release -> VPS 私有缓存 -> WireGuard 节点`。私有 GitHub 的只读凭据只保存在 VPS；普通客户端和 `.2/.5` 不保存 GitHub Token。VPS 在切换 coordinator 前会验证所有发布物 SHA-256 并缓存到 `/var/lib/wireguard-p2p/updates/current`，其他节点只通过 `10.0.0.1:8899/updates/` 获取经过清单校验的包。失败时保留或恢复旧版本；WireGuard 配置、密钥和 `/24` relay baseline 不参与更新。

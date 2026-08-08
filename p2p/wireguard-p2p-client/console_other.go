@@ -26,3 +26,5 @@ func installConsoleCloseHandler() (<-chan struct{}, chan struct{}) {
 	}()
 	return shutdown, cleanupDone
 }
+
+func requestRunningInstanceStop() error { return nil }
