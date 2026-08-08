@@ -6,6 +6,7 @@ on:
     paths:
       - 'tools/apply_v710_generic_roles.py'
       - 'tools/fix_v710_stage.py'
+      - 'tools/post_v710_stage.py'
       - '.github/workflows/stage-v710-generic-roles.yml'
 
 permissions:
@@ -29,6 +30,7 @@ jobs:
         run: |
           python tools/fix_v710_stage.py
           python tools/apply_v710_generic_roles.py
+          python tools/post_v710_stage.py
       - name: Format Go
         run: gofmt -w p2p/wireguard-p2p-client/*.go
       - name: Validate Python and shell
