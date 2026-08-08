@@ -1,0 +1,47 @@
+name: stage-v75-ipv4
+
+on:
+  push:
+    branches: [work/v7.5-ipv4-direct]
+    paths:
+      - 'tools/apply_v75.py'
+      - '.github/workflows/stage-v75.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/v7.5-ipv4-direct
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: p2p/wireguard-p2p-exe/go.mod
+      - name: Apply v7.5 patch
+        run: python tools/apply_v75.py
+      - name: Format Go
+        run: gofmt -w p2p/wireguard-p2p-exe/*.go
+      - name: Python compile and tests
+        run: |
+          python -m compileall -q p2p/wireguard-p2p/linux p2p/wireguard-p2p/vps
+          python -m unittest discover -s p2p/wireguard-p2p/tests -v
+      - name: Go vet and tests
+        working-directory: p2p/wireguard-p2p-exe
+        run: |
+          go vet ./...
+          go test ./...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/wireguard-p2p-v75.exe .
+      - name: Commit generated source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add p2p README.md
+          git commit -m 'feat: add IPv4 simultaneous direct traversal'
+          git push origin HEAD:work/v7.5-ipv4-direct
