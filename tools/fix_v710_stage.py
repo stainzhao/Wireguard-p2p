@@ -16,4 +16,9 @@ text = text.replace(
     'name = "p2p/wireguard-p2p/tests/test_runtime.py"\ntext = read(name)\ntext = replace_once(text, "import pathlib\\n", "import pathlib\\nimport tempfile\\n", "runtime tempfile import")\npattern = re.compile(',
     1,
 )
+text = text.replace(
+    'text, count = pattern.subn(replacement, text, count=1)',
+    'text, count = pattern.subn(lambda _match: replacement, text, count=1)',
+    1,
+)
 p.write_text(text, encoding="utf-8")
