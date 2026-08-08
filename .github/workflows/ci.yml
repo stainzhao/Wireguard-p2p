@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   python:
     runs-on: ubuntu-latest
@@ -19,6 +22,9 @@ jobs:
           test ! -e p2p/wireguard-p2p/linux/wireguard-p2p-sync.service
           test ! -e p2p/wireguard-p2p-exe
           test ! -e p2p/wireguard-p2p/journald-wireguard-p2p.conf
+          test -f p2p/wireguard-p2p/manage/wireguard-p2p.py
+          test -f p2p/wireguard-p2p/linux/install_server.sh
+          test -f p2p/wireguard-p2p/vps/install_vps.sh
           if find p2p -type f -name '*.exe' -print -quit | grep -q .; then
             echo 'compiled Windows EXE must not be tracked'
             exit 1
@@ -28,7 +34,13 @@ jobs:
             exit 1
           fi
       - name: Compile Python sources
-        run: python -m compileall -q p2p/wireguard-p2p/linux p2p/wireguard-p2p/vps
+        run: python -m compileall -q p2p/wireguard-p2p/linux p2p/wireguard-p2p/vps p2p/wireguard-p2p/manage
+      - name: Validate installers
+        run: |
+          sh -n p2p/wireguard-p2p/linux/install_server.sh
+          sh -n p2p/wireguard-p2p/vps/install_vps.sh
+          sh -n p2p/wireguard-p2p-client/deploy/linux/install.sh
+          sh -n p2p/wireguard-p2p-client/deploy/linux/uninstall.sh
       - name: Run Python tests
         run: python -m unittest discover -s p2p/wireguard-p2p/tests -v
 
@@ -91,3 +103,95 @@ jobs:
           path: p2p/wireguard-p2p-client/dist/wireguard-p2p-linux-arm64.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [python, client]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: wireguard-p2p-windows-amd64
+          path: dist/download/windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: wireguard-p2p-linux-amd64
+          path: dist/download/linux-amd64
+      - uses: actions/download-artifact@v4
+        with:
+          name: wireguard-p2p-linux-arm64
+          path: dist/download/linux-arm64
+      - name: Build release payloads and manifest
+        id: release_meta
+        run: |
+          set -eu
+          mkdir -p dist/release dist/server dist/vps
+          cp dist/download/windows/wireguard-p2p.exe dist/release/wireguard-p2p-windows-amd64.exe
+          cp dist/download/linux-amd64/wireguard-p2p-linux-amd64.tar.gz dist/release/
+          cp dist/download/linux-arm64/wireguard-p2p-linux-arm64.tar.gz dist/release/
+
+          cp p2p/wireguard-p2p/linux/p2p_agent.py \
+             p2p/wireguard-p2p/linux/candidates.py \
+             p2p/wireguard-p2p/linux/portmap.py \
+             p2p/wireguard-p2p/linux/portmap_daemon.py \
+             p2p/wireguard-p2p/linux/wireguard-p2p-agent.service \
+             p2p/wireguard-p2p/linux/wireguard-p2p-portmap.service \
+             dist/server/
+          cp p2p/wireguard-p2p/manage/wireguard-p2p.py dist/server/
+          tar -C dist/server -czf dist/release/wireguard-p2p-server.tar.gz .
+
+          cp p2p/wireguard-p2p/vps/peers_api.py \
+             p2p/wireguard-p2p/vps/peers-api.service \
+             dist/vps/
+          cp p2p/wireguard-p2p/manage/wireguard-p2p.py dist/vps/
+          tar -C dist/vps -czf dist/release/wireguard-p2p-vps.tar.gz .
+
+          python - <<'PY'
+          import hashlib, json, pathlib, re
+          root = pathlib.Path('dist/release')
+          main = pathlib.Path('p2p/wireguard-p2p-client/main.go').read_text()
+          version = re.search(r'\bversion\s*=\s*"([^"]+)"', main).group(1)
+          names = {
+              'windows-amd64': 'wireguard-p2p-windows-amd64.exe',
+              'linux-amd64': 'wireguard-p2p-linux-amd64.tar.gz',
+              'linux-arm64': 'wireguard-p2p-linux-arm64.tar.gz',
+              'server-linux': 'wireguard-p2p-server.tar.gz',
+              'vps-linux': 'wireguard-p2p-vps.tar.gz',
+          }
+          assets = {}
+          for key, name in names.items():
+              data = (root / name).read_bytes()
+              assets[key] = {'file': name, 'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)}
+          manifest = {'version': version, 'protocol': 7, 'assets': assets}
+          (root / 'manifest.json').write_text(json.dumps(manifest, separators=(',', ':')), encoding='utf-8')
+          pathlib.Path('/tmp/p2p-version').write_text(version)
+          PY
+          VERSION=$(cat /tmp/p2p-version)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          sha256sum dist/release/* > dist/release/SHA256SUMS
+      - name: Publish immutable version release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release_meta.outputs.version }}
+        run: |
+          set -eu
+          TAG="v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            git fetch --tags --force
+            TAG_SHA=$(git rev-list -n 1 "$TAG")
+            if [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
+              echo "Release $TAG already points to $TAG_SHA; bump VERSION before publishing another build." >&2
+              exit 1
+            fi
+            gh release upload "$TAG" dist/release/* --clobber
+          else
+            gh release create "$TAG" dist/release/* \
+              --target "$GITHUB_SHA" \
+              --title "WireGuard P2P ${VERSION}" \
+              --notes "Managed update release ${VERSION}."
+          fi
