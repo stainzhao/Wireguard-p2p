@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-VERSION = "7.9.0"
+VERSION = "7.10.0"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
 AGENT_PORT = 8898
@@ -30,9 +30,8 @@ MAX_CANDIDATES = 16
 NOTIFY_KEY_FILE = os.environ.get("P2P_NOTIFY_KEY_FILE", "/etc/wireguard-p2p/notify.key")
 UPDATE_DIR = os.environ.get("P2P_UPDATE_DIR", "/var/lib/wireguard-p2p/updates/current")
 UPDATE_MAX_FILE_SIZE = 128 * 1024 * 1024
-DEFAULT_SERVER_IPS = {"10.0.0.2", "10.0.0.5"}
 SERVER_REGISTRY_FILE = os.environ.get("P2P_SERVER_REGISTRY_FILE", "/etc/wireguard-p2p/servers.conf")
-RELAY_ONLY_IPS = {"10.0.0.8"}
+RELAY_ONLY_REGISTRY_FILE = os.environ.get("P2P_RELAY_ONLY_REGISTRY_FILE", "/etc/wireguard-p2p/relay-only.conf")
 OVERLAY_NETWORK = ipaddress.ip_network("10.0.0.0/24")
 
 LAN_CANDIDATES = {}
@@ -92,12 +91,12 @@ def record_push_result(server_ip, ok, error=""):
         log(message_to_log)
 
 
-def server_ips():
+def load_role_registry(filename):
     try:
-        with open(SERVER_REGISTRY_FILE, "r", encoding="utf-8") as handle:
+        with open(filename, "r", encoding="utf-8") as handle:
             raw = [line.split("#", 1)[0].strip() for line in handle]
     except OSError:
-        raw = sorted(DEFAULT_SERVER_IPS)
+        return set()
     result = set()
     for value in raw:
         if not value:
@@ -112,11 +111,17 @@ def server_ips():
             and address in OVERLAY_NETWORK
             and address not in (OVERLAY_NETWORK.network_address, OVERLAY_NETWORK.broadcast_address)
             and normalized != LISTEN_ADDRESS
-            and normalized not in RELAY_ONLY_IPS
         ):
             result.add(normalized)
     return result
 
+
+def server_ips():
+    return load_role_registry(SERVER_REGISTRY_FILE)
+
+
+def relay_only_ips():
+    return load_role_registry(RELAY_ONLY_REGISTRY_FILE)
 
 def new_push_status():
     return {
@@ -130,7 +135,7 @@ def new_push_status():
 
 
 def peer_role(overlay_ip):
-    if overlay_ip in RELAY_ONLY_IPS:
+    if overlay_ip in relay_only_ips():
         return "relay_only"
     if overlay_ip in server_ips():
         return "server"

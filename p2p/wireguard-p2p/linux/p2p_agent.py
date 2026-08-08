@@ -34,7 +34,7 @@ from candidates import (
     usable_global_ipv6,
 )
 
-VERSION = "7.9.0"
+VERSION = "7.10.0"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
@@ -214,7 +214,7 @@ def validate_peer_ip(value):
     address = ipaddress.ip_address(value)
     if address.version != 4 or address not in ipaddress.ip_network("10.0.0.0/24"):
         raise ValueError("invalid peer overlay IP")
-    if str(address) in (VPS_ADDRESS, LISTEN_ADDRESS, "10.0.0.8"):
+    if str(address) in (VPS_ADDRESS, LISTEN_ADDRESS):
         raise ValueError("peer is not P2P eligible")
     return str(address)
 

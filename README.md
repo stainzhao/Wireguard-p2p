@@ -1,52 +1,90 @@
 # WireGuard P2P
 
-当前生产版本：**v7.9.0**，协议版本仍为 7。
+当前生产版本：**v7.10.0**，协议版本 7。
 
-本项目是在现有 WireGuard `10.0.0.0/24` 网络之上增加自动 P2P Direct。**VPS relay 永远是基线，P2P 失败不能破坏基础连通性。**
-
-## 1. 角色
+这是一个建立在现有 WireGuard Overlay 之上的自动 P2P Direct 项目。当前默认拓扑仍是：
 
 ```text
-VPS / Coordinator
-  10.0.0.1
-  peers_api.py
-
-Linux P2P Server
-  任意经 VPS 授权的 10.0.0.x，例如 10.0.0.2 / .5 / .10
-  Python p2p_agent.py + port mapping
-
-P2P Client
-  Windows amd64
-  Linux amd64 / arm64
-  共享 Go client core
+Overlay CIDR: 10.0.0.0/24
+Coordinator:  10.0.0.1
+API:          http://10.0.0.1:8899
+WG interface: wg0
 ```
 
-`10.0.0.8` 当前保留为 `relay_only`，不要注册为 Server。`10.0.0.1` 是 VPS。
+**v7.10 的核心变化：节点编号不再具有任何内置含义。** `.2`、`.5`、`.8`、`.10` 都只是普通 Overlay 地址；除 VPS `10.0.0.1`、网络地址 `.0` 和广播地址 `.255` 外，任意合法 `10.0.0.x` 都可以被配置成 `client`、`server` 或 `relay_only`。
 
-Server **不再写死 `.2/.5`，也不再把 Server 公钥编译进 Client**。VPS 通过 `/etc/wireguard-p2p/servers.conf` 管理 Server 授权，Client 根据 Coordinator 返回的 `role=server` 动态发现所有 Server。因此以后新增 `.10/.11/...` 不需要修改源码或重新编译 Client。
+> 这意味着 `10.0.0.8` 不再被写死成 `relay_only`，`.2/.5` 也不再是新安装时的默认 Server。
 
-## 2. 不可破坏的网络约束
+## 1. 角色模型
 
-部署 Agent 必须遵守：
+角色由 VPS 配置决定，不由 IP 尾号决定：
 
 ```text
-WireGuard interface: wg0（默认）
-VPS overlay:        10.0.0.1
-Coordinator API:    http://10.0.0.1:8899
-Relay baseline:     AllowedIPs = 10.0.0.0/24
-Direct route:       仅 fresh authenticated WG handshake 后添加目标 /32
-Keepalive:          Direct 使用 25s
+client       默认角色。没有显式配置的普通 WireGuard Peer 都是 client。
+server       可被 Client 自动发现并尝试 P2P Direct 的 Linux Server Agent。
+relay_only   可选角色。节点保持 WireGuard Relay 基线，但不参与 P2P 协调。
 ```
 
-除非用户明确要求，否则 **不要修改 WireGuard 私钥、公钥、VPS Endpoint、基础 `/24 AllowedIPs`、Candidate 优先级、打洞窗口或 relay 基线**。
+VPS 使用两个配置文件：
 
-## 3. Agent 最短部署流程
+```text
+/etc/wireguard-p2p/servers.conf
+/etc/wireguard-p2p/relay-only.conf
+```
 
-### A. VPS 首次安装
+**不要让 Agent 直接编辑这些文件。** 使用管理命令：
 
-前提：VPS 已有可工作的 `wg0=10.0.0.1`，并安装 `python3`、`wireguard-tools`、`systemd`。
+```bash
+sudo wireguard-p2p role list
+sudo wireguard-p2p role get 10.0.0.8
+sudo wireguard-p2p role set 10.0.0.8 client
+sudo wireguard-p2p role set 10.0.0.8 server
+sudo wireguard-p2p role set 10.0.0.8 relay_only
+```
 
-私有 GitHub 仓库首次需要一个只读 Token：
+兼容快捷命令仍保留：
+
+```bash
+sudo wireguard-p2p server list
+sudo wireguard-p2p server add 10.0.0.10
+sudo wireguard-p2p server remove 10.0.0.10
+
+sudo wireguard-p2p relay-only list
+sudo wireguard-p2p relay-only add 10.0.0.20
+sudo wireguard-p2p relay-only remove 10.0.0.20
+```
+
+`role set` 会保证角色互斥：一个节点不会同时存在于 `server` 与 `relay_only` 注册表中。`client` 是隐式默认角色，因此设置为 `client` 会从两个显式注册表中移除该 IP。
+
+## 2. 不可破坏的网络不变量
+
+P2P 是增强层，不是基础 WireGuard 的替代品：
+
+```text
+Relay baseline: AllowedIPs = 10.0.0.0/24
+Direct route:   只有 fresh authenticated WireGuard handshake 成功后才安装目标 /32
+Keepalive:      Direct = 25 s
+Fallback:       Direct 失败或过期时回退 VPS /24 Relay
+```
+
+Agent **禁止**因为部署 P2P 而重建 WireGuard key、删除 VPS Peer、删除 `/24 AllowedIPs`、关闭 Relay，或仅凭 Candidate 信息直接安装 `/32`。
+
+## 3. 给 Agent 的部署决策
+
+先执行：
+
+```bash
+wg show wg0
+ping -c 2 10.0.0.1
+```
+
+基础 WireGuard 不通时，先修 WireGuard，不要继续 P2P 安装。
+
+### 3.1 VPS / Coordinator 首次安装
+
+前提：VPS 已有 `wg0=10.0.0.1`，并安装 `python3`、`wireguard-tools`、`systemd`。
+
+私有 GitHub 仓库首次输入只读 Token：
 
 ```bash
 read -rsp 'GitHub read token: ' T; echo; curl -fsSL -H "Authorization: Bearer $T" -H 'Accept: application/vnd.github.raw+json' 'https://api.github.com/repos/stainzhao/p2p/contents/p2p/wireguard-p2p/bootstrap/bootstrap-vps.py?ref=main' | sudo env P2P_GITHUB_TOKEN="$T" python3 -
@@ -57,71 +95,56 @@ read -rsp 'GitHub read token: ' T; echo; curl -fsSL -H "Authorization: Bearer $T
 ```bash
 curl -fsS http://10.0.0.1:8899/health
 sudo wireguard-p2p version
-sudo wireguard-p2p server list
+sudo wireguard-p2p role list
 ```
 
-首次安装会默认保留历史 Server `.2` 和 `.5`。Server 注册表位于：
+**全新 v7.10 安装不会自动创建 `.2/.5/.8` 等任何角色。** 两个角色注册表初始为空。若从 v7.9 升级，已有 `servers.conf` 会被保留，因此旧 `.2/.5` Server 不会因升级丢失。
 
-```text
-/etc/wireguard-p2p/servers.conf
-```
+### 3.2 部署任意 Linux P2P Server
 
-不要让 Agent 直接编辑该文件，优先使用管理命令。
+例如目标 Overlay IP 是 `10.0.0.10`。
 
-### B. 新增任意 Linux P2P Server（例如 `.10`）
-
-前提：该机器已经完成基础 WireGuard 配置，`wg0` 上有 `10.0.0.10`，且：
+在 VPS：
 
 ```bash
-ping -c 2 10.0.0.1
+sudo wireguard-p2p role set 10.0.0.10 server
 ```
 
-先在 **VPS** 授权：
-
-```bash
-sudo wireguard-p2p server add 10.0.0.10
-```
-
-再在 **10.0.0.10** 机器执行唯一安装命令：
+然后在目标 Linux 机器：
 
 ```bash
 curl -fsSL http://10.0.0.1:8899/updates/bootstrap-linux-server.sh | sudo sh
 ```
 
-安装器会自动读取 `wg0` 的 overlay IP，不需要传 `.10`、用户名、CPU 架构或 `notify.key`。只有已经在 VPS 授权的 Server IP 才能取得 Server HMAC key；未授权节点会返回 403，并提示先执行 `server add`。
+Server 安装器会：
 
-`.2/.5` 在首次 VPS 安装后默认已授权，因此可以直接运行同一条 Server bootstrap 命令。
+```text
+检查 wg0
+自动读取本机 10.0.0.x
+向 VPS 再次验证该 IP 当前确实是 server
+领取/刷新 notify.key
+安装 Python Agent + port mapping
+安装 systemd services
+启动并重启服务
+```
 
-验证 Server：
+因此 `.2`、`.5`、`.8`、`.10`、`.100` 的部署方式完全相同。IP 尾号不再进入源码逻辑。
+
+验证：
 
 ```bash
 sudo wireguard-p2p version
 systemctl is-active wireguard-p2p-agent.service
 systemctl is-active wireguard-p2p-portmap.service
-curl -fsS http://$(ip -4 -o addr show dev wg0 | awk '$4 ~ /^10\.0\.0\./ {sub(/\/.*/,"",$4); print $4; exit}'):8898/health
+wg show wg0
 ```
 
-删除 Server 授权：
+### 3.3 普通 Linux Client
 
-```bash
-sudo wireguard-p2p server remove 10.0.0.10
-```
-
-此命令在 VPS 执行。若设备不再承担 Server 角色，还应停止该设备上的 Agent service。
-
-### C. 普通 Linux Client 首次安装
-
-前提：`wg0` 已能访问 `10.0.0.1`。
+没有显式角色时默认就是 `client`，无需先在 VPS 注册。
 
 ```bash
 curl -fsSL http://10.0.0.1:8899/updates/bootstrap-linux-client.sh | sudo sh
-```
-
-自动识别：
-
-```text
-x86_64/amd64 -> linux-amd64
-aarch64/arm64 -> linux-arm64
 ```
 
 验证：
@@ -132,25 +155,47 @@ journalctl -u wireguard-p2p-client.service -n 50 --no-pager
 wg show wg0
 ```
 
-### D. Windows Client
+### 3.4 Windows Client
 
-安装 WireGuard、导入基础 `wg0` 配置，然后使用 Release 中：
+安装 WireGuard 并导入基础配置，然后运行 Release 中：
 
 ```text
 wireguard-p2p-windows-amd64.exe
 ```
 
-运行后会动态发现 VPS 当前授权的全部 Server，不需要在 EXE 中维护 `.2/.5/.10` 公钥列表。
+Windows/Linux Go Client 都根据 Coordinator 返回的 `role=server` 动态发现 Server，不保存固定 Server IP 或公钥列表。
+
+### 3.5 可选 relay_only 节点
+
+只有明确希望某节点**不参与 P2P，只保留基础 WireGuard Relay 行为**时才配置：
+
+```bash
+sudo wireguard-p2p role set 10.0.0.20 relay_only
+```
+
+恢复普通 Client：
+
+```bash
+sudo wireguard-p2p role set 10.0.0.20 client
+```
+
+`relay_only` 是一种可选配置能力，不再绑定任何固定 IP。
 
 ## 4. 更新
 
 建议顺序：
 
 ```text
-VPS -> Linux Servers -> Clients
+VPS -> Servers -> Clients
 ```
 
-所有 Linux VPS/Server/Client：
+VPS、Linux Server：
+
+```bash
+sudo wireguard-p2p update
+```
+
+普通 Linux Client 同样：
 
 ```bash
 sudo wireguard-p2p update
@@ -162,15 +207,15 @@ Windows：
 .\wireguard-p2p.exe update
 ```
 
-VPS 是唯一访问私有 GitHub Release 的节点。VPS 校验 SHA-256 后把 Release 缓存在：
+VPS 是唯一访问私有 GitHub Release 的节点。发布物经 SHA-256 验证后缓存到：
 
 ```text
 /var/lib/wireguard-p2p/updates/current
 ```
 
-其他节点只从 WireGuard overlay 的 `10.0.0.1:8899/updates/` 获取包。
+其他节点只从 `10.0.0.1:8899/updates/` 获取。
 
-## 5. Candidate 优先级
+## 5. Candidate 顺序
 
 ```text
 lan4        1000
@@ -183,34 +228,15 @@ predicted4   500
 VPS /24      baseline
 ```
 
-只有 fresh authenticated WireGuard handshake 才能提升为 Direct `/32`。
+v7.10 **没有修改** Candidate 优先级、IPv4/IPv6 打洞窗口、fresh-handshake promotion、Direct keepalive 或 Relay fallback。
 
-## 6. Agent 部署决策表
-
-| 目标机器 | Agent 应做什么 |
-|---|---|
-| VPS `10.0.0.1` | 首次跑 VPS bootstrap；以后 `sudo wireguard-p2p update` |
-| 新 P2P Server | 先在 VPS `server add <overlay-ip>`，再在目标机跑 server bootstrap |
-| 已授权 `.2/.5` | 直接跑 server bootstrap |
-| 普通 Linux Client | 直接跑 client bootstrap |
-| Windows Client | 使用 Release EXE；以后 EXE `update` |
-
-Agent 在执行前必须先确认：
-
-```bash
-wg show wg0
-ping -c 2 10.0.0.1
-```
-
-若基础 WireGuard 不通，**先排查 WireGuard，不要用 P2P 安装器掩盖问题**。
-
-## 7. 常用诊断
+## 6. 常用运维命令
 
 VPS：
 
 ```bash
 sudo wireguard-p2p status
-sudo wireguard-p2p server list
+sudo wireguard-p2p role list
 curl -fsS http://10.0.0.1:8899/health
 systemctl status peers-api.service --no-pager
 ```
@@ -220,7 +246,8 @@ Server：
 ```bash
 sudo wireguard-p2p status
 systemctl status wireguard-p2p-agent.service --no-pager
-sudo journalctl -u wireguard-p2p-agent.service -n 100 --no-pager
+systemctl status wireguard-p2p-portmap.service --no-pager
+journalctl -u wireguard-p2p-agent.service -n 100 --no-pager
 wg show wg0 endpoints
 wg show wg0 latest-handshakes
 ```
@@ -233,35 +260,28 @@ journalctl -u wireguard-p2p-client.service -n 100 --no-pager
 wg show wg0
 ```
 
-常见错误：
+## 7. Agent 故障处理规则
 
-- Server bootstrap `403`：该 overlay IP 尚未在 VPS `server add` 授权。
-- `/updates/...` 返回 `404`：VPS 尚未完成当前 Release 缓存，先在 VPS `sudo wireguard-p2p update --force`。
-- P2P Direct 失败但 `10.0.0.x` 仍可访问：这是正常 Relay fallback。
-- `10.0.0.1` 本身不通：基础 WireGuard 问题，不属于 P2P Agent。
+- Server bootstrap 返回 `403`：在 VPS 执行 `sudo wireguard-p2p role get <IP>`；若不是 `server`，先 `role set <IP> server`。
+- `/updates/...` 返回 `404`：VPS 先执行 `sudo wireguard-p2p update --force`。
+- Direct 失败但 Overlay IP 仍通：这是正常 Relay fallback，不要破坏 `/24`。
+- `10.0.0.1` 不通：属于基础 WireGuard 问题。
+- 改角色不需要重新编译 Client，也不需要改 Server 公钥列表。
 
-## 8. 发布与源码结构
+## 8. Agent 硬规则
 
-```text
-.github/workflows/ci.yml
-p2p/wireguard-p2p-client/        Windows/Linux Go Client
-p2p/wireguard-p2p/linux/         Linux Server Agent
-p2p/wireguard-p2p/vps/           Coordinator
-p2p/wireguard-p2p/manage/        Linux VPS/Server 管理命令
-p2p/wireguard-p2p/bootstrap/     一行首次安装入口
-p2p/wireguard-p2p/tests/         Python 回归测试
-p2p/wireguard-p2p/docs/          当前文档
-```
+1. 先读本 README，再部署。
+2. 先验证 `wg0` 和 `10.0.0.1` 基线。
+3. 普通 Linux Client 使用 Go Client，不安装 Python Server Agent。
+4. Linux Server 必须先在 VPS 显式设置为 `server`。
+5. 不根据 IP 尾号猜角色；`.8` 没有特殊意义。
+6. 不直接编辑角色注册表，优先使用 `wireguard-p2p role ...`。
+7. 不修改 WireGuard 私钥、公钥、基础 VPS Peer 和 `/24 AllowedIPs`。
+8. 更新后验证版本、systemd active 状态以及 VPS/Server `/health`。
+9. Direct 失败时保留 Relay。
 
-`main` CI 构建并发布 Windows amd64、Linux amd64/arm64、Server、VPS 与 bootstrap 资产。编译产物不提交到 Git。
+## 9. 当前“通用”的边界
 
-## 9. 给自动化 Agent 的硬规则
+v7.10 已经实现**节点角色通用化**：项目源码不再依赖 `.2/.5/.8` 等具体设备地址，新节点可直接通过角色配置加入。
 
-1. 优先读取本 README，再执行部署。
-2. 不要把普通 Linux Client 安装成 Python Server Agent。
-3. 新 Server IP 必须先通过 VPS `wireguard-p2p server add` 授权。
-4. 不要把 `10.0.0.8` 注册为 Server。
-5. 不要覆盖 `/etc/wireguard/` 或重新生成 WireGuard key。
-6. 不要删除 `AllowedIPs = 10.0.0.0/24` relay baseline。
-7. 更新后必须检查版本、systemd active 状态和 `/health`。
-8. Direct 失败时保留 Relay，不要为了“强制 P2P”破坏基础连通性。
+当前默认 Overlay 拓扑仍固定为 `10.0.0.0/24 + VPS 10.0.0.1 + wg0`。如果未来需要把这个项目直接复用到 `172.16.x.x`、`10.20.0.0/16` 或不同 Coordinator 地址，可继续把 Overlay CIDR/API 地址参数化；这与本次“去除设备硬编码”是独立的一层。

@@ -36,9 +36,9 @@ class ApiTests(unittest.TestCase):
                     "last_error_log": 0,
                 })
 
-    def test_roles(self):
-        self.assertEqual(api.peer_role("10.0.0.2"), "server")
-        self.assertEqual(api.peer_role("10.0.0.8"), "relay_only")
+    def test_roles_default_to_client_without_registry_entries(self):
+        self.assertEqual(api.peer_role("10.0.0.2"), "client")
+        self.assertEqual(api.peer_role("10.0.0.8"), "client")
         self.assertEqual(api.peer_role("10.0.0.4"), "client")
 
     def test_announcement_validation(self):
@@ -84,18 +84,21 @@ class ApiTests(unittest.TestCase):
             "192.168.0.198",
         )
 
-    def test_disconnect_clears_client_and_server_candidates(self):
+    def test_disconnect_clears_client_and_explicit_server_candidates(self):
         client = {"key": "client-key", "ip": "10.0.0.4"}
         with api.STATE_LOCK:
             api.SESSIONS[client["ip"]] = dict(client, last_seen=1)
             api.LAN_CANDIDATES[client["ip"]] = {"seen": 1}
             api.LAN_CANDIDATES["10.0.0.2"] = {"seen": 1}
-        original = api.push_remove
+        original_push = api.push_remove
+        original_servers = api.server_ips
         api.push_remove = lambda _client: None
+        api.server_ips = lambda: {"10.0.0.2"}
         try:
             api.disconnect_client(client)
         finally:
-            api.push_remove = original
+            api.push_remove = original_push
+            api.server_ips = original_servers
         self.assertEqual(api.SESSIONS, {})
         self.assertNotIn(client["ip"], api.LAN_CANDIDATES)
         self.assertNotIn("10.0.0.2", api.LAN_CANDIDATES)
@@ -125,10 +128,12 @@ class AgentTests(unittest.TestCase):
             "211.71.91.89:51820",
         )
 
-    def test_self_vps_and_relay_peers_are_rejected(self):
-        for address in ("10.0.0.1", "10.0.0.5", "10.0.0.8"):
+    def test_only_vps_and_self_are_rejected_by_agent(self):
+        for address in ("10.0.0.1", "10.0.0.5"):
             with self.assertRaises(ValueError):
                 agent.validate_peer_ip(address)
+        self.assertEqual(agent.validate_peer_ip("10.0.0.2"), "10.0.0.2")
+        self.assertEqual(agent.validate_peer_ip("10.0.0.8"), "10.0.0.8")
 
     def test_event_logs_are_quiet_by_default(self):
         output = io.StringIO()
