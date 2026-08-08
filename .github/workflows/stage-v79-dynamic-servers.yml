@@ -5,6 +5,7 @@ on:
     branches: [work/v7.9-dynamic-servers]
     paths:
       - 'tools/apply_v79_dynamic_servers.py'
+      - 'tools/patch_v79_tests.py'
       - '.github/workflows/stage-v79-dynamic-servers.yml'
 
 permissions:
@@ -25,7 +26,9 @@ jobs:
         with:
           go-version-file: p2p/wireguard-p2p-client/go.mod
       - name: Apply v7.9 dynamic server refactor
-        run: python tools/apply_v79_dynamic_servers.py
+        run: |
+          python tools/apply_v79_dynamic_servers.py
+          python tools/patch_v79_tests.py
       - name: Format Go
         run: gofmt -w p2p/wireguard-p2p-client/*.go
       - name: Validate Python and shell
