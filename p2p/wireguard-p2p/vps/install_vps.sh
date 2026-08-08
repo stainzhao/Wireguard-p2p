@@ -5,6 +5,7 @@ set -eu
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required." >&2; exit 1; }
 command -v systemctl >/dev/null 2>&1 || { echo "systemd is required." >&2; exit 1; }
 command -v wg >/dev/null 2>&1 || { echo "wireguard-tools is required." >&2; exit 1; }
+command -v useradd >/dev/null 2>&1 || { echo "useradd is required." >&2; exit 1; }
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ -f "$SCRIPT_DIR/../manage/wireguard-p2p.py" ]; then
@@ -18,7 +19,9 @@ KEY_FILE="$CONFIG_DIR/notify.key"
 TOKEN_FILE="$CONFIG_DIR/github.token"
 
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
-    useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin "$SERVICE_USER"
+    NOLOGIN=$(command -v nologin || true)
+    [ -n "$NOLOGIN" ] || NOLOGIN=/usr/sbin/nologin
+    useradd --system --home-dir /nonexistent --shell "$NOLOGIN" "$SERVICE_USER"
 fi
 install -d -m 0755 /opt/wireguard-p2p
 install -d -m 0750 "$CONFIG_DIR"
