@@ -6,6 +6,7 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required." >&2; exit 1;
 command -v systemctl >/dev/null 2>&1 || { echo "systemd is required." >&2; exit 1; }
 command -v wg >/dev/null 2>&1 || { echo "wireguard-tools is required." >&2; exit 1; }
 command -v ip >/dev/null 2>&1 || { echo "iproute2 is required." >&2; exit 1; }
+command -v useradd >/dev/null 2>&1 || { echo "useradd is required." >&2; exit 1; }
 
 WG_INTERFACE=wg0
 if [ "${1:-}" = "--interface" ]; then
@@ -34,7 +35,9 @@ CONFIG_DIR=/etc/wireguard-p2p
 KEY_FILE="$CONFIG_DIR/notify.key"
 
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
-    useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin "$SERVICE_USER"
+    NOLOGIN=$(command -v nologin || true)
+    [ -n "$NOLOGIN" ] || NOLOGIN=/usr/sbin/nologin
+    useradd --system --home-dir /nonexistent --shell "$NOLOGIN" "$SERVICE_USER"
 fi
 install -d -m 0750 "$CONFIG_DIR"
 if [ ! -s "$KEY_FILE" ]; then
