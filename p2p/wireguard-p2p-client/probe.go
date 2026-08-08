@@ -53,9 +53,22 @@ func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 	}
 	now := time.Now().Unix()
 	active := make(map[string]bool)
+	currentServers := make(map[string]string)
+	for _, peer := range peers {
+		if peer.Role == "server" && peer.Key != "" && peer.IP != "" {
+			currentServers[peer.Key] = peer.IP
+		}
+	}
+	a.mu.Lock()
+	previousServers := make(map[string]string, len(a.serverKeys))
+	for key, serverIP := range a.serverKeys {
+		previousServers[key] = serverIP
+	}
+	a.serverKeys = currentServers
+	a.mu.Unlock()
 
 	for _, peer := range peers {
-		serverIP, isServer := serverKeys[peer.Key]
+		serverIP, isServer := currentServers[peer.Key]
 		if !isServer || peer.Endpoint == "" || peer.LatestHandshake == 0 {
 			continue
 		}
@@ -182,7 +195,14 @@ func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 		}
 	}
 
-	for key := range serverKeys {
+	trackedServers := make(map[string]bool, len(previousServers)+len(currentServers))
+	for key := range previousServers {
+		trackedServers[key] = true
+	}
+	for key := range currentServers {
+		trackedServers[key] = true
+	}
+	for key := range trackedServers {
 		if active[key] {
 			continue
 		}

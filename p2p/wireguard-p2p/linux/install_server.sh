@@ -19,8 +19,9 @@ wg show "$WG_INTERFACE" >/dev/null 2>&1 || { echo "WireGuard interface '$WG_INTE
 
 OVERLAY_IP=$(ip -4 -o addr show dev "$WG_INTERFACE" | awk '$4 ~ /^10\.0\.0\./ {sub(/\/.*/, "", $4); print $4; exit}')
 case "$OVERLAY_IP" in
-    10.0.0.2|10.0.0.5) ;;
-    *) echo "This installer is only for P2P server roles 10.0.0.2/10.0.0.5; detected '${OVERLAY_IP:-none}'." >&2; exit 1 ;;
+    10.0.0.1|10.0.0.8|"") echo "Overlay IP '${OVERLAY_IP:-none}' cannot be used as a P2P server." >&2; exit 1 ;;
+    10.0.0.*) ;;
+    *) echo "P2P server requires a 10.0.0.x overlay address; detected '${OVERLAY_IP:-none}'." >&2; exit 1 ;;
 esac
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -41,13 +42,23 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 install -d -m 0750 "$CONFIG_DIR"
 if [ ! -s "$KEY_FILE" ]; then
-    KEY_FILE="$KEY_FILE" python3 - <<'PY'
-import os, urllib.request
+    KEY_FILE="$KEY_FILE" OVERLAY_IP="$OVERLAY_IP" python3 - <<'PY'
+import os, urllib.error, urllib.request
 path = os.environ["KEY_FILE"]
+overlay_ip = os.environ["OVERLAY_IP"]
 request = urllib.request.Request("http://10.0.0.1:8899/bootstrap/server-key")
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-with opener.open(request, timeout=10) as response:
-    data = response.read()
+try:
+    with opener.open(request, timeout=10) as response:
+        data = response.read()
+except urllib.error.HTTPError as exc:
+    if exc.code == 403:
+        raise SystemExit(
+            "Server {} is not authorized. On the VPS run: sudo wireguard-p2p server add {}".format(
+                overlay_ip, overlay_ip
+            )
+        )
+    raise
 if len(data.strip()) < 32:
     raise SystemExit("VPS returned an invalid notification key")
 with open(path, "wb") as handle:

@@ -1,6 +1,6 @@
 # Operations
 
-本文档只面向当前 **v7.8.0** 实现。
+本文档只面向当前 **v7.9.0** 实现。
 
 ## 1. 运行角色
 
@@ -133,3 +133,22 @@ curl -fsSL http://10.0.0.1:8899/updates/bootstrap-linux-client.sh | sudo sh
 ```
 
 首次安装与后续更新都不修改 WireGuard 密钥、VPS peer 或 `/24` relay baseline。Server 的 HMAC `notify.key` 只允许固定 overlay 身份 `10.0.0.2/10.0.0.5` 通过 WireGuard 内网领取。
+
+
+## Dynamic Server enrollment (v7.9+)
+
+Linux Server identities are no longer compiled as `.2/.5`. The VPS registry `/etc/wireguard-p2p/servers.conf` is authoritative. Use:
+
+```bash
+sudo wireguard-p2p server list
+sudo wireguard-p2p server add 10.0.0.10
+sudo wireguard-p2p server remove 10.0.0.10
+```
+
+After authorization, the target Linux node can install with:
+
+```bash
+curl -fsSL http://10.0.0.1:8899/updates/bootstrap-linux-server.sh | sudo sh
+```
+
+Clients discover all current servers from coordinator `role=server`; server public keys are not compiled into the Go client.

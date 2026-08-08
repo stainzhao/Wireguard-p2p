@@ -125,8 +125,8 @@ class AgentTests(unittest.TestCase):
             "211.71.91.89:51820",
         )
 
-    def test_server_and_relay_peers_are_rejected(self):
-        for address in ("10.0.0.1", "10.0.0.2", "10.0.0.5", "10.0.0.8"):
+    def test_self_vps_and_relay_peers_are_rejected(self):
+        for address in ("10.0.0.1", "10.0.0.5", "10.0.0.8"):
             with self.assertRaises(ValueError):
                 agent.validate_peer_ip(address)
 

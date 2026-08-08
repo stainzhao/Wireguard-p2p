@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	version          = "7.8.0"
+	version          = "7.9.0"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
@@ -33,15 +33,12 @@ const (
 
 var (
 	errDeviceNotRegistered = errors.New("this device is not registered/online on the VPS")
-	serverKeys             = map[string]string{
-		"YmAf+TDF3vM4QyOjPLbYu51owmIpqJt7osYugYtyhSg=": "10.0.0.5", // 2696
-		"XTMmfyf2EWH7prfVCSkcWDOB5Lth5+F+OU8KsgtJhQQ=": "10.0.0.2", // GPU
-	}
 )
 
 type apiPeer struct {
 	Key             string      `json:"key"`
 	IP              string      `json:"ip"`
+	Role            string      `json:"role"`
 	Endpoint        string      `json:"endpoint"`
 	LatestHandshake int64       `json:"latest_handshake"`
 	LanEndpoint     string      `json:"lan_endpoint"`
@@ -79,6 +76,7 @@ type app struct {
 	wgPath             string
 	httpClient         *http.Client
 	states             map[string]*peerState
+	serverKeys         map[string]string
 	lastSyncError      string
 	lastErrorLog       time.Time
 	failureDelay       time.Duration
@@ -132,7 +130,8 @@ func main() {
 			Timeout:   3 * time.Second,
 			Transport: &http.Transport{Proxy: nil},
 		},
-		states: make(map[string]*peerState),
+		states:     make(map[string]*peerState),
+		serverKeys: make(map[string]string),
 	}
 
 	shutdown, cleanupDone := installConsoleCloseHandler()
@@ -314,7 +313,7 @@ func (a *app) cleanup() {
 		state.WorkerRunning = false
 		_, _ = a.wg("set", a.interfaceName, "peer", key, "remove")
 	}
-	for key := range serverKeys {
+	for key := range a.serverKeys {
 		_, _ = a.wg("set", a.interfaceName, "peer", key, "remove")
 	}
 }
@@ -355,7 +354,7 @@ func (a *app) fallbackStaleDirects() {
 		return
 	}
 	now := time.Now().Unix()
-	for key, serverIP := range serverKeys {
+	for key, serverIP := range a.serverKeys {
 		peer, exists := locals[key]
 		if !exists || !contains(peer.AllowedIPs, serverIP+"/32") {
 			continue

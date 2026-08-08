@@ -17,6 +17,7 @@ SERVICE_USER=wireguard-p2p
 CONFIG_DIR=/etc/wireguard-p2p
 KEY_FILE="$CONFIG_DIR/notify.key"
 TOKEN_FILE="$CONFIG_DIR/github.token"
+SERVER_REGISTRY_FILE="$CONFIG_DIR/servers.conf"
 
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     NOLOGIN=$(command -v nologin || true)
@@ -36,6 +37,12 @@ PY
 fi
 chown "$SERVICE_USER:$SERVICE_USER" "$KEY_FILE"
 chmod 0400 "$KEY_FILE"
+
+if [ ! -e "$SERVER_REGISTRY_FILE" ]; then
+    printf '10.0.0.2\n10.0.0.5\n' > "$SERVER_REGISTRY_FILE"
+fi
+chown root:"$SERVICE_USER" "$SERVER_REGISTRY_FILE"
+chmod 0640 "$SERVER_REGISTRY_FILE"
 
 if [ -n "${P2P_GITHUB_TOKEN:-}" ]; then
     umask 077
