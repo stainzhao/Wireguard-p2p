@@ -36,7 +36,7 @@ class RuntimeTests(unittest.TestCase):
 
     def _state(self, key, peer_ip="10.0.0.3"):
         session_id = str(uuid.uuid4())
-        state = agent.new_peer_state(peer_ip, session_id, time.time_ns())
+        state = agent.new_peer_state(peer_ip, session_id, agent.time_ns())
         state["lease_expires"] = time.time() + 120
         agent.STATES[key] = state
         return state, session_id
@@ -175,6 +175,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("missing_ok=True", source)
         self.assertNotIn("text=True", source)
         self.assertIn("universal_newlines=True", source)
+
+    def test_python36_time_ns_fallback(self):
+        agent_source = (LINUX / "p2p_agent.py").read_text(encoding="utf-8")
+        api_source = (ROOT / "vps" / "peers_api.py").read_text(encoding="utf-8")
+        self.assertNotIn("time.time_ns()", agent_source)
+        self.assertNotIn("time.time_ns()", api_source)
+        self.assertIsInstance(agent.time_ns(), int)
+        self.assertIsInstance(api.time_ns(), int)
 
     def test_installers_verify_service_health_before_success(self):
         server_installer = (LINUX / "install_server.sh").read_text(encoding="utf-8")

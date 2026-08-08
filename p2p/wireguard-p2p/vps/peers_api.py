@@ -17,6 +17,13 @@ import urllib.parse
 import urllib.request
 import uuid
 
+
+def time_ns():
+    native = getattr(time, "time_ns", None)
+    if native is not None:
+        return native()
+    return int(time.time() * 1000000000)
+
 VERSION = "7.10.1"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
@@ -508,7 +515,7 @@ def coordinate_client(client, client_lan_endpoint, peers, client_candidates=None
                 stale_session = existing
                 session = {
                     "session_id": str(uuid.uuid4()),
-                    "session_started_ns": time.time_ns(),
+                    "session_started_ns": time_ns(),
                     "key": client["key"],
                     "ip": client["ip"],
                     "last_seen": now,
@@ -523,7 +530,7 @@ def coordinate_client(client, client_lan_endpoint, peers, client_candidates=None
                 if not session.get("session_id"):
                     session["session_id"] = str(uuid.uuid4())
                 if not session.get("session_started_ns"):
-                    session["session_started_ns"] = time.time_ns()
+                    session["session_started_ns"] = time_ns()
                 session["key"] = client["key"]
                 session["last_seen"] = now
                 session["candidates"] = list(client_candidates)
