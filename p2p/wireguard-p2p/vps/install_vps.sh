@@ -27,6 +27,8 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 install -d -m 0755 /opt/wireguard-p2p
 install -d -m 0750 "$CONFIG_DIR"
+chown root:"$SERVICE_USER" "$CONFIG_DIR"
+chmod 0750 "$CONFIG_DIR"
 
 if [ ! -s "$KEY_FILE" ]; then
     KEY_FILE="$KEY_FILE" python3 - <<'PY'

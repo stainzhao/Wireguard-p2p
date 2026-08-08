@@ -15,9 +15,10 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "7.10.0"
+VERSION = "7.10.1"
 API_BASE = "http://10.0.0.1:8899"
 GITHUB_REPO = os.environ.get("P2P_GITHUB_REPO", "stainzhao/p2p")
+CONFIG_DIR = Path(os.environ.get("P2P_CONFIG_DIR", "/etc/wireguard-p2p"))
 TOKEN_FILE = Path(os.environ.get("P2P_GITHUB_TOKEN_FILE", "/etc/wireguard-p2p/github.token"))
 INSTALL_ROOT = Path("/opt/wireguard-p2p")
 MANAGER_PATH = Path("/usr/local/bin/wireguard-p2p")
@@ -78,6 +79,29 @@ def run(*args, check=True):
 
 def systemctl(*args, check=True):
     return run("systemctl", *args, check=check)
+
+
+
+def repair_config_permissions(role):
+    """Repair service-account access after the v7.10.0 fresh-install regression."""
+    if not CONFIG_DIR.exists():
+        return
+    try:
+        shutil.chown(CONFIG_DIR, user="root", group="wireguard-p2p")
+    except LookupError as exc:
+        raise RuntimeError("wireguard-p2p service account is missing") from exc
+    os.chmod(CONFIG_DIR, 0o750)
+
+    key_file = CONFIG_DIR / "notify.key"
+    if key_file.exists():
+        shutil.chown(key_file, user="wireguard-p2p", group="wireguard-p2p")
+        os.chmod(key_file, 0o400)
+
+    if role == "vps":
+        for registry in (SERVER_REGISTRY_FILE, RELAY_ONLY_REGISTRY_FILE):
+            if registry.exists():
+                shutil.chown(registry, user="root", group="wireguard-p2p")
+                os.chmod(registry, 0o640)
 
 
 def detect_role():
@@ -517,6 +541,8 @@ def main():
     if os.geteuid() != 0 and command in ("update", "server", "relay-only", "role"):
         raise RuntimeError("run this command with sudo")
     role = detect_role()
+    if os.geteuid() == 0:
+        repair_config_permissions(role)
     force = "--force" in sys.argv[2:]
     if command in ("version", "--version", "-version"):
         print(installed_version(role))

@@ -41,6 +41,8 @@ if ! id "$SERVICE_USER" >/dev/null 2>&1; then
     useradd --system --home-dir /nonexistent --shell "$NOLOGIN" "$SERVICE_USER"
 fi
 install -d -m 0750 "$CONFIG_DIR"
+chown root:"$SERVICE_USER" "$CONFIG_DIR"
+chmod 0750 "$CONFIG_DIR"
 KEY_FILE="$KEY_FILE" OVERLAY_IP="$OVERLAY_IP" python3 - <<'PY'
 import os, urllib.error, urllib.request
 path = os.environ["KEY_FILE"]
