@@ -1,6 +1,6 @@
 # Operations
 
-本文档只面向当前 **v7.6.0** 实现。
+本文档只面向当前 **v7.7.0** 实现。
 
 ## 1. 运行角色
 
@@ -103,3 +103,14 @@ curl http://10.0.0.1:8899/health
 建议顺序仍为：VPS -> `.2/.5` Server Agent -> clients。协议 7 的 `/24` relay 基线始终保留。
 
 Windows 与 Linux clients 使用同一 Go core，因此同一个 release 的 P2P 行为应保持一致。Linux amd64/arm64 只区别 CPU 架构。
+
+
+## Managed update
+
+v7.7 以后推荐只使用管理命令更新：
+
+```bash
+sudo wireguard-p2p update
+```
+
+适用于 VPS、Linux Server Agent 和 Linux Client。Windows 使用 `wireguard-p2p.exe update`。VPS 是唯一访问私有 GitHub Release 的节点，并把通过 SHA-256 校验的当前发布物缓存到 `/var/lib/wireguard-p2p/updates/current`；其余节点只从 WireGuard overlay 的 `10.0.0.1:8899/updates/` 下载。`--force` 可重装同版本。

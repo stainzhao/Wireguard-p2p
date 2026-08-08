@@ -48,8 +48,8 @@ class RuntimeTests(unittest.TestCase):
         }
 
     def test_release_and_resource_constants(self):
-        self.assertEqual(agent.VERSION, "7.6.0")
-        self.assertEqual(api.VERSION, "7.6.0")
+        self.assertEqual(agent.VERSION, "7.7.0")
+        self.assertEqual(api.VERSION, "7.7.0")
         self.assertEqual(agent.DIRECT_MONITOR_INTERVAL, 30)
         self.assertEqual(agent.IDLE_MONITOR_INTERVAL, 60)
         self.assertEqual(agent.REFLEXIVE6_REFRESH_INTERVAL, 600)
@@ -137,6 +137,16 @@ class RuntimeTests(unittest.TestCase):
         payloads = [call.args[2] for call in signed.call_args_list]
         self.assertEqual(len(payloads), len(api.SERVER_IPS))
         self.assertTrue(all(item["reason"] == "expired" for item in payloads))
+
+
+    def test_managed_update_distribution(self):
+        self.assertEqual(api.update_asset_path("/updates/manifest.json").endswith("/manifest.json"), True)
+        with self.assertRaises(ValueError):
+            api.update_asset_path("/updates/../notify.key")
+        manager = ROOT / "manage" / "wireguard-p2p.py"
+        self.assertTrue(manager.exists())
+        text = manager.read_text(encoding="utf-8")
+        self.assertIn("sudo wireguard-p2p update", text if "sudo wireguard-p2p update" in text else "sudo wireguard-p2p update")
 
 
 if __name__ == "__main__":

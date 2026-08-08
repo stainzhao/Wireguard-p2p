@@ -13,10 +13,11 @@ import socketserver
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
 import uuid
 
-VERSION = "7.6.0"
+VERSION = "7.7.0"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
 AGENT_PORT = 8898
@@ -27,6 +28,8 @@ PUSH_TIMEOUT = 2
 MAX_REQUEST_SIZE = 16384
 MAX_CANDIDATES = 16
 NOTIFY_KEY_FILE = os.environ.get("P2P_NOTIFY_KEY_FILE", "/etc/wireguard-p2p/notify.key")
+UPDATE_DIR = os.environ.get("P2P_UPDATE_DIR", "/var/lib/wireguard-p2p/updates/current")
+UPDATE_MAX_FILE_SIZE = 128 * 1024 * 1024
 SERVER_IPS = {"10.0.0.2", "10.0.0.5"}
 RELAY_ONLY_IPS = {"10.0.0.8"}
 
@@ -643,6 +646,20 @@ def session_reaper():
             push_remove(session, reason="expired")
 
 
+def update_asset_path(request_path):
+    prefix = "/updates/"
+    if not request_path.startswith(prefix):
+        raise ValueError("invalid update path")
+    name = urllib.parse.unquote(request_path[len(prefix):].split("?", 1)[0])
+    if not name or name != os.path.basename(name) or name in (".", ".."):
+        raise ValueError("invalid update filename")
+    root = os.path.realpath(UPDATE_DIR)
+    candidate = os.path.realpath(os.path.join(root, name))
+    if os.path.dirname(candidate) != root:
+        raise ValueError("invalid update path")
+    return candidate
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "WireGuardP2P/{}".format(VERSION)
     sys_version = ""
@@ -666,8 +683,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise ValueError("invalid request size")
         return json.loads(self.rfile.read(size).decode())
 
+    def send_update_file(self, path):
+        size = os.path.getsize(path)
+        if size < 0 or size > UPDATE_MAX_FILE_SIZE:
+            self.send_json(413, {"error": "update file too large"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(size))
+        self.end_headers()
+        with open(path, "rb") as handle:
+            while True:
+                block = handle.read(1024 * 1024)
+                if not block:
+                    break
+                self.wfile.write(block)
+
     def do_GET(self):
         try:
+            if self.path.startswith("/updates/"):
+                try:
+                    path = update_asset_path(self.path)
+                except ValueError as exc:
+                    self.send_json(400, {"error": str(exc)})
+                    return
+                if not os.path.isfile(path):
+                    self.send_json(404, {"error": "update asset not found"})
+                    return
+                self.send_update_file(path)
+                return
             if self.path == "/":
                 self.send_json(200, peer_payload())
                 return
@@ -691,6 +736,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "peer_count": len(peers),
                     "session_count": session_count,
                     "server_push": server_push,
+                    "update_ready": os.path.isfile(os.path.join(UPDATE_DIR, "manifest.json")),
                 })
                 return
             self.send_json(404, {"error": "not found"})

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -17,7 +18,7 @@ import (
 )
 
 const (
-	version          = "7.6.0"
+	version          = "7.7.0"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
@@ -88,6 +89,21 @@ type app struct {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version", "--version", "-version":
+			fmt.Println(version)
+			return
+		case "update":
+			force := len(os.Args) > 2 && os.Args[2] == "--force"
+			if err := runUpdate(force); err != nil {
+				fmt.Fprintln(os.Stderr, "Update failed:", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
 	preferred := flag.String("interface", "wg0", "preferred WireGuard interface name")
 	flag.Parse()
 	if !acquireSingleInstance() {
