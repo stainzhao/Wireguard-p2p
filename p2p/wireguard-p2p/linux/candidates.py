@@ -4,6 +4,7 @@
 import ipaddress
 import json
 import os
+import socket
 import subprocess
 import time
 
@@ -16,6 +17,11 @@ PRIORITY = {
     "observed4": 700,
     "predicted4": 500,
 }
+PREFERRED_HOST6_PRIORITY = 910
+PREFERRED_IPV6_PROBE_TARGETS = (
+    "2606:4700:4700::1111",
+    "2001:4860:4860::8888",
+)
 MAX_PROBE_CANDIDATES = 5
 PORTMAP_STATE_FILE = os.environ.get(
     "P2P_PORTMAP_STATE_FILE", "/run/wireguard-p2p/mapped4.json"
@@ -81,6 +87,37 @@ def usable_global_ipv6(address):
     )
 
 
+def ipv6_address_info_unusable(info):
+    flags = set(info.get("flags", []) or [])
+    if "tentative" in flags or "deprecated" in flags:
+        return True
+    for key in ("preferred_life_time", "preferred_lft"):
+        if key not in info:
+            continue
+        value = info.get(key)
+        if value == 0 or str(value).strip().lower() in ("0", "0sec"):
+            return True
+    return False
+
+
+def preferred_source_ipv6():
+    for target in PREFERRED_IPV6_PROBE_TARGETS:
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        try:
+            sock.connect((target, 53, 0, 0))
+            address = sock.getsockname()[0]
+        except OSError:
+            continue
+        finally:
+            sock.close()
+        try:
+            if usable_global_ipv6(address):
+                return ipaddress.ip_address(address).compressed
+        except ValueError:
+            continue
+    return ""
+
+
 def global_ipv6_addresses():
     try:
         result = subprocess.run(
@@ -108,7 +145,7 @@ def global_ipv6_addresses():
         for info in interface.get("addr_info", []):
             if info.get("family") != "inet6" or info.get("scope") != "global":
                 continue
-            if "tentative" in info.get("flags", []) or "deprecated" in info.get("flags", []):
+            if ipv6_address_info_unusable(info):
                 continue
             address = info.get("local", "")
             try:
@@ -189,12 +226,17 @@ def gather_candidates(listen_port, lan_ip=""):
         except ValueError:
             pass
 
+    preferred = preferred_source_ipv6()
     for address in global_ipv6_addresses():
         candidates.append({
             "type": "host6",
             "family": "udp6",
             "endpoint": format_endpoint(address, port),
-            "priority": PRIORITY["host6"],
+            "priority": (
+                PREFERRED_HOST6_PRIORITY
+                if address == preferred
+                else PRIORITY["host6"]
+            ),
             "verified": False,
         })
 

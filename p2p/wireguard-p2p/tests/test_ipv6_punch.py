@@ -22,8 +22,52 @@ api = load_module("api_ipv6", ROOT / "vps" / "peers_api.py")
 
 class IPv6PunchTests(unittest.TestCase):
     def test_current_release_versions_match(self):
-        self.assertEqual(agent.VERSION, "7.10.1")
-        self.assertEqual(api.VERSION, "7.10.1")
+        self.assertEqual(agent.VERSION, "7.11.0")
+        self.assertEqual(api.VERSION, "7.11.0")
+
+    def test_deprecated_ipv6_lifetime_is_rejected(self):
+        self.assertTrue(candidates.ipv6_address_info_unusable({
+            "flags": [], "preferred_life_time": 0,
+        }))
+        self.assertTrue(candidates.ipv6_address_info_unusable({
+            "flags": ["deprecated"], "preferred_life_time": 120,
+        }))
+        self.assertFalse(candidates.ipv6_address_info_unusable({
+            "flags": [], "preferred_life_time": "forever",
+        }))
+
+    def test_preferred_source_is_ranked_above_backup_host6(self):
+        original_global = candidates.global_ipv6_addresses
+        original_preferred = candidates.preferred_source_ipv6
+        try:
+            candidates.global_ipv6_addresses = lambda: [
+                "2001:da8:216:191a::1",
+                "2001:da8:216:191a::2",
+            ]
+            candidates.preferred_source_ipv6 = lambda: "2001:da8:216:191a::2"
+            result = candidates.gather_candidates(51820)
+            host6 = [item for item in result if item["type"] == "host6"]
+            self.assertEqual(host6[0]["endpoint"], "[2001:da8:216:191a::2]:51820")
+            self.assertEqual(host6[0]["priority"], candidates.PREFERRED_HOST6_PRIORITY)
+            self.assertEqual(host6[1]["priority"], candidates.PRIORITY["host6"])
+        finally:
+            candidates.global_ipv6_addresses = original_global
+            candidates.preferred_source_ipv6 = original_preferred
+
+    def test_preferred_native_host6_gets_overlap_window(self):
+        original = agent.global_ipv6_addresses
+        try:
+            agent.global_ipv6_addresses = lambda: ["2001:da8::1"]
+            self.assertEqual(
+                agent.candidate_probe_window({"type": "host6", "priority": 910}),
+                agent.SIMULTANEOUS_IPV6_WINDOW,
+            )
+            self.assertEqual(
+                agent.candidate_probe_window({"type": "host6", "priority": 900}),
+                agent.CANDIDATE_PROBE_WINDOW,
+            )
+        finally:
+            agent.global_ipv6_addresses = original
 
     def test_confirmation_rekey_only_for_nat66_server_to_host6(self):
         original = agent.global_ipv6_addresses

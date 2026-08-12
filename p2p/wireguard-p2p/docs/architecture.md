@@ -1,4 +1,4 @@
-# Current architecture — v7.10.1
+# Current architecture — v7.11.0
 
 ## 1. Control/relay baseline
 
@@ -26,9 +26,10 @@ Coordinator 的 `peer_payload()` 将实时角色返回给 Go Client，因此新�
 ## 3. Candidate priority
 
 ```text
-lan4        1000
-host6        900
-observed6    850
+lan4                  1000
+preferred host6          910
+backup host6             900
+observed6                850
 reflexive6   825
 mapped4      800
 observed4    700
@@ -36,7 +37,7 @@ predicted4   500
 VPS /24      baseline
 ```
 
-IPv6 NAT66 simultaneous punch、IPv4 observed4 simultaneous punch、bounded predicted4、PCP/NAT-PMP/UPnP mapped4 均继续遵守 fresh-handshake promotion。
+Native IPv6 会先按 OS 实际 source-address selection 选出 preferred host6；首选地址对使用 8 秒 overlap window，备用 GUA 再按顺序探测。deprecated/tentative 地址不发布。IPv6 NAT66 simultaneous punch、IPv4 observed4 simultaneous punch、bounded predicted4、PCP/NAT-PMP/UPnP mapped4 均继续遵守 fresh-handshake promotion。
 
 ## 4. Security and lifecycle
 
