@@ -107,3 +107,30 @@ func TestBuildProbeCandidatesSkipsIPv6WithoutLocalIPv6(t *testing.T) {
 		t.Fatal("observed4 fallback missing")
 	}
 }
+
+func TestPreferredHost6GetsOverlapWindow(t *testing.T) {
+	candidate := Candidate{
+		Type:     "host6",
+		Family:   "udp6",
+		Endpoint: "[2001:da8:216:191a::1]:51820",
+		Priority: candidatePriorityPreferredHost6,
+	}
+	if got := probeWindowForCandidate(candidate); got != simultaneousIPv6Window {
+		t.Fatalf("preferred host6 window=%v want %v", got, simultaneousIPv6Window)
+	}
+	candidate.Priority = candidatePriorityHost6
+	if got := probeWindowForCandidate(candidate); got != candidateProbeWindow {
+		t.Fatalf("backup host6 window=%v want %v", got, candidateProbeWindow)
+	}
+}
+
+func TestPreferredHost6SortsBeforeBackup(t *testing.T) {
+	candidates := []Candidate{
+		{Type: "host6", Endpoint: "[2001:da8::2]:51820", Priority: candidatePriorityHost6},
+		{Type: "host6", Endpoint: "[2001:da8::1]:51820", Priority: candidatePriorityPreferredHost6},
+	}
+	sortCandidates(candidates)
+	if candidates[0].Priority != candidatePriorityPreferredHost6 {
+		t.Fatalf("preferred host6 was not first: %+v", candidates)
+	}
+}

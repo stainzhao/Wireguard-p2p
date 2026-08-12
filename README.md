@@ -1,6 +1,6 @@
 # WireGuard P2P
 
-当前生产版本：**v7.10.1**，协议版本 7。
+当前生产版本：**v7.11.0**，协议版本 7。
 
 这是一个建立在现有 WireGuard Overlay 之上的自动 P2P Direct 项目。当前默认拓扑仍是：
 
@@ -10,6 +10,8 @@ Coordinator:  10.0.0.1
 API:          http://10.0.0.1:8899
 WG interface: wg0
 ```
+
+**v7.11 的 IPv6 变化：多 GUA 主机不再把所有 `host6` 当成完全等价。Client/Server 会询问操作系统实际的 IPv6 源地址选择，将该地址以更高优先级发布，并给首选 `host6` 8 秒重叠打洞窗口；deprecated/tentative IPv6 不再发布，IPv6 Probe 会明确写入日志。**
 
 **v7.10 的核心变化：节点编号不再具有任何内置含义。** `.2`、`.5`、`.8`、`.10` 都只是普通 Overlay 地址；除 VPS `10.0.0.1`、网络地址 `.0` 和广播地址 `.255` 外，任意合法 `10.0.0.x` 都可以被配置成 `client`、`server` 或 `relay_only`。
 

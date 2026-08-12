@@ -8,14 +8,15 @@ import (
 )
 
 const (
-	candidatePriorityLAN4       = 1000
-	candidatePriorityHost6      = 900
-	candidatePriorityObserved6  = 850
-	candidatePriorityReflexive6 = 825
-	candidatePriorityMapped4    = 800
-	candidatePriorityObserved4  = 700
-	candidatePriorityPredict4   = 500
-	maxProbeCandidates          = 5
+	candidatePriorityLAN4           = 1000
+	candidatePriorityPreferredHost6 = 910
+	candidatePriorityHost6          = 900
+	candidatePriorityObserved6      = 850
+	candidatePriorityReflexive6     = 825
+	candidatePriorityMapped4        = 800
+	candidatePriorityObserved4      = 700
+	candidatePriorityPredict4       = 500
+	maxProbeCandidates              = 5
 )
 
 type Candidate struct {
@@ -24,6 +25,11 @@ type Candidate struct {
 	Endpoint string `json:"endpoint"`
 	Priority int    `json:"priority"`
 	Verified bool   `json:"verified,omitempty"`
+}
+
+var preferredIPv6ProbeTargets = []string{
+	"2606:4700:4700::1111",
+	"2001:4860:4860::8888",
 }
 
 var nonHostIPv6CIDRs = []string{
@@ -52,18 +58,43 @@ func gatherLocalCandidates(listenPort int, lanIP string) []Candidate {
 		})
 	}
 
+	preferred := preferredGlobalIPv6Address()
 	for _, ip := range globalIPv6Addresses() {
+		priority := candidatePriorityHost6
+		if preferred != nil && ip.Equal(preferred) {
+			priority = candidatePriorityPreferredHost6
+		}
 		result = append(result, Candidate{
 			Type:     "host6",
 			Family:   "udp6",
 			Endpoint: net.JoinHostPort(ip.String(), strconv.Itoa(listenPort)),
-			Priority: candidatePriorityHost6,
+			Priority: priority,
 		})
 	}
 
 	result = dedupeCandidates(result)
 	sortCandidates(result)
 	return result
+}
+
+func preferredGlobalIPv6Address() net.IP {
+	for _, target := range preferredIPv6ProbeTargets {
+		remote := net.ParseIP(target)
+		if remote == nil {
+			continue
+		}
+		conn, err := net.DialUDP("udp6", nil, &net.UDPAddr{IP: remote, Port: 53})
+		if err != nil {
+			continue
+		}
+		local, _ := conn.LocalAddr().(*net.UDPAddr)
+		_ = conn.Close()
+		if local == nil || !isUsableGlobalIPv6(local.IP) {
+			continue
+		}
+		return append(net.IP(nil), local.IP...)
+	}
+	return nil
 }
 
 func globalIPv6Addresses() []net.IP {

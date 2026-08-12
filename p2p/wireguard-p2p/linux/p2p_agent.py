@@ -41,7 +41,7 @@ def time_ns():
         return native()
     return int(time.time() * 1000000000)
 
-VERSION = "7.10.1"
+VERSION = "7.11.0"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
@@ -446,7 +446,10 @@ def candidate_probe_window(candidate):
     if not isinstance(candidate, dict):
         return CANDIDATE_PROBE_WINDOW
     candidate_type = candidate.get("type")
-    if candidate_type == "host6" and not global_ipv6_addresses():
+    if candidate_type == "host6" and (
+        int(candidate.get("priority", 0) or 0) > 900
+        or not global_ipv6_addresses()
+    ):
         return SIMULTANEOUS_IPV6_WINDOW
     if candidate_type == "observed4":
         return SIMULTANEOUS_IPV4_WINDOW
@@ -649,7 +652,12 @@ def probe_worker(key, generation):
     for candidate in candidates:
         if not probe_generation_current(key, generation):
             return
-        if candidate.get("type") == "observed4":
+        if candidate.get("type") == "host6":
+            if int(candidate.get("priority", 0) or 0) > 900:
+                log("Preferred IPv6 punch {} via {}".format(peer_ip, candidate.get("endpoint", "")))
+            else:
+                log("Backup IPv6 probe {} via {}".format(peer_ip, candidate.get("endpoint", "")))
+        elif candidate.get("type") == "observed4":
             log("Simultaneous IPv4 punch {} via {}".format(peer_ip, candidate.get("endpoint", "")))
         elif candidate.get("type") == "predicted4":
             log("Bounded IPv4 port prediction {} via {}".format(peer_ip, candidate.get("endpoint", "")))

@@ -16,6 +16,11 @@ const (
 
 func probeWindowForCandidate(candidate Candidate) time.Duration {
 	switch candidate.Type {
+	case "host6":
+		if candidate.Priority > candidatePriorityHost6 {
+			return simultaneousIPv6Window
+		}
+		return candidateProbeWindow
 	case "reflexive6":
 		return simultaneousIPv6Window
 	case "observed4":
@@ -231,7 +236,13 @@ func (a *app) runProbeWorker(key, serverIP string, generation int64) {
 		if !a.probeGenerationCurrent(key, generation) {
 			return
 		}
-		if candidate.Type == "reflexive6" {
+		if candidate.Type == "host6" {
+			if candidate.Priority > candidatePriorityHost6 {
+				a.log("Preferred IPv6 punch " + serverIP + " via " + candidate.Endpoint + ".")
+			} else {
+				a.log("Backup IPv6 probe " + serverIP + " via " + candidate.Endpoint + ".")
+			}
+		} else if candidate.Type == "reflexive6" {
 			a.log("Simultaneous IPv6 punch " + serverIP + " via " + candidate.Endpoint + ".")
 		} else if candidate.Type == "observed4" {
 			a.log("Simultaneous IPv4 punch " + serverIP + " via " + candidate.Endpoint + ".")
