@@ -24,7 +24,9 @@ jobs:
           go-version-file: p2p/wireguard-p2p-client/go.mod
           cache-dependency-path: p2p/wireguard-p2p-client/go.mod
       - name: Apply v7.11 transformation
-        run: python tools/apply_v711_ipv6_source_aware.py
+        run: |
+          python tools/apply_v711_ipv6_source_aware.py
+          python tools/fix_v711_generated.py
       - name: Format Go
         run: gofmt -w p2p/wireguard-p2p-client/candidate.go p2p/wireguard-p2p-client/candidate_test.go p2p/wireguard-p2p-client/probe.go
       - name: Compile and test Python
