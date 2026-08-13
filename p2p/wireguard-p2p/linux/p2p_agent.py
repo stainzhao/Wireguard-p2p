@@ -41,11 +41,14 @@ def time_ns():
         return native()
     return int(time.time() * 1000000000)
 
-VERSION = "7.11.0"
+VERSION = "7.12.0"
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
 VPS_ADDRESS = "10.0.0.1"
+COORDINATOR_SYNC_URL = "http://10.0.0.1:8899/sync"
+INITIATOR_SYNC_INTERVAL = 15
+INITIATOR_ONLINE_MAX_AGE = 180
 STATE_FILE = os.environ.get("P2P_STATE_FILE", "/run/wireguard-p2p/state.json")
 LOCK_FILE = os.environ.get("P2P_LOCK_FILE", "/run/wireguard-p2p/agent.lock")
 NOTIFY_KEY_FILE = os.environ.get("P2P_NOTIFY_KEY_FILE", "/etc/wireguard-p2p/notify.key")
@@ -272,6 +275,30 @@ def validate_endpoint(value):
     return "{}:{}".format(address.compressed, port)
 
 
+def endpoint_address(value):
+    try:
+        endpoint = validate_endpoint(value)
+    except (TypeError, ValueError):
+        return ""
+    if endpoint.startswith("["):
+        return endpoint[1:endpoint.index("]")]
+    return endpoint.rsplit(":", 1)[0]
+
+
+def server_initiator_owns_pair(local_ip, remote_ip):
+    try:
+        local = ipaddress.ip_address(local_ip)
+        remote = ipaddress.ip_address(remote_ip)
+    except ValueError:
+        return False
+    return (
+        local.version == 4
+        and remote.version == 4
+        and local != remote
+        and int(local) < int(remote)
+    )
+
+
 def validate_candidates(values):
     if values is None:
         return []
@@ -423,6 +450,161 @@ def current_reflexive6_candidate(listen_port_value):
     if not address or now - updated > REFLEXIVE6_TTL:
         return None
     return reflexive6_candidate(address, listen_port_value)
+
+
+def local_candidate_snapshot():
+    lan_ip = local_ipv4()
+    wg_port = listen_port()
+    if not lan_ip or not wg_port:
+        raise RuntimeError("local WireGuard candidate is unavailable")
+    local_candidates = gather_candidates(wg_port, lan_ip)
+    reflexive = current_reflexive6_candidate(wg_port)
+    if reflexive:
+        local_candidates.append(reflexive)
+        local_candidates.sort(
+            key=lambda item: (
+                -int(item.get("priority", 0)), item.get("endpoint", "")
+            )
+        )
+    return lan_ip, wg_port, local_candidates
+
+
+def coordinator_sync_once():
+    lan_ip, wg_port, local_candidates = local_candidate_snapshot()
+    payload = json.dumps({
+        "protocol": 7,
+        "lan_ip": lan_ip,
+        "listen_port": wg_port,
+        "candidates": local_candidates,
+    }, separators=(",", ":")).encode()
+    request = urllib.request.Request(
+        COORDINATOR_SYNC_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=5) as response:
+        result = json.loads(response.read().decode())
+    if int(result.get("protocol", 0) or 0) != 7:
+        raise RuntimeError("Coordinator protocol mismatch")
+    return result
+
+
+def eligible_initiator_server(peer, now=None):
+    if not isinstance(peer, dict) or peer.get("role") != "server":
+        return False
+    if not peer.get("key") or not peer.get("ip") or not peer.get("endpoint"):
+        return False
+    if not server_initiator_owns_pair(LISTEN_ADDRESS, peer.get("ip", "")):
+        return False
+    now = time.time() if now is None else float(now)
+    latest = int(peer.get("latest_handshake", 0) or 0)
+    return bool(latest and now - latest <= INITIATOR_ONLINE_MAX_AGE)
+
+
+def cleanup_initiator_states(active_keys):
+    active_keys = set(active_keys or ())
+    with STATE_LOCK:
+        current = local_wg_peers()
+        changed = False
+        for key, state in list(STATES.items()):
+            if state.get("controller") != "initiator" or key in active_keys:
+                continue
+            state["generation"] = int(state.get("generation", 0)) + 1
+            state["worker_running"] = False
+            if key in current:
+                try:
+                    wg_set("peer", key, "remove")
+                except Exception as exc:
+                    log_error("initiator peer cleanup failed: {}".format(exc))
+            del STATES[key]
+            changed = True
+        if changed:
+            save_state()
+
+
+def server_initiator_once():
+    result = coordinator_sync_once()
+    peers = result.get("peers", [])
+    if not isinstance(peers, list):
+        raise RuntimeError("Coordinator returned invalid peers")
+    ours = next(
+        (peer for peer in peers if peer.get("ip") == LISTEN_ADDRESS), None
+    )
+    if ours is None or ours.get("role") != "server":
+        cleanup_initiator_states(set())
+        return
+
+    session_id = result.get("session_id", "")
+    session_started_ns = int(result.get("session_started_ns", 0) or 0)
+    if not session_id or session_started_ns <= 0:
+        cleanup_initiator_states(set())
+        return
+
+    our_wan = endpoint_address(ours.get("endpoint", ""))
+    now = time.time()
+    active_keys = set()
+    for peer in peers:
+        if not eligible_initiator_server(peer, now):
+            continue
+        key = peer.get("key")
+        active_keys.add(key)
+        peer_wan = endpoint_address(peer.get("endpoint", ""))
+        same_nat = bool(our_wan and peer_wan and our_wan == peer_wan)
+        lan_endpoint = peer.get("lan_endpoint", "")
+        endpoint_type = "LAN" if same_nat and lan_endpoint else "WAN"
+        endpoint = lan_endpoint if endpoint_type == "LAN" else peer.get("endpoint", "")
+        try:
+            handle_offer({
+                "peer_key": key,
+                "peer_ip": peer.get("ip", ""),
+                "session_id": session_id,
+                "session_started_ns": session_started_ns,
+                "endpoint": endpoint,
+                "endpoint_type": endpoint_type,
+                "candidates": peer.get("candidates", []),
+                "lease_expires": int(now) + 180,
+            }, controller="initiator")
+        except Exception as exc:
+            log_error(
+                "server initiator reconcile failed for {}: {}".format(
+                    peer.get("ip", "?"), exc
+                )
+            )
+    cleanup_initiator_states(active_keys)
+
+
+def coordinator_disconnect():
+    request = urllib.request.Request(
+        "http://10.0.0.1:8899/disconnect",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=3) as response:
+        response.read()
+
+
+def server_initiator_loop():
+    last_error = ""
+    last_error_time = 0
+    while not STOP.is_set():
+        try:
+            server_initiator_once()
+            if last_error:
+                log("server initiator recovered")
+            last_error = ""
+        except Exception as exc:
+            message = str(exc)
+            now = time.time()
+            if message != last_error or now - last_error_time >= 300:
+                log_error("server initiator sync failed: {}".format(message))
+                last_error = message
+                last_error_time = now
+        if STOP.wait(INITIATOR_SYNC_INTERVAL):
+            return
 
 
 def reflexive6_loop():
@@ -796,8 +978,9 @@ def launch_probe(key, generation):
     thread.start()
 
 
-def new_peer_state(peer_ip, session_id, session_started_ns):
+def new_peer_state(peer_ip, session_id, session_started_ns, controller="responder"):
     return {
+        "controller": controller,
         "session_id": session_id,
         "session_started_ns": session_started_ns,
         "ip": peer_ip,
@@ -817,7 +1000,7 @@ def new_peer_state(peer_ip, session_id, session_started_ns):
     }
 
 
-def handle_offer(data):
+def handle_offer(data, controller="responder"):
     now = time.time()
     key = validate_public_key(data["peer_key"])
     peer_ip = validate_peer_ip(data["peer_ip"])
@@ -861,7 +1044,7 @@ def handle_offer(data):
                 if local:
                     wg_set("peer", key, "remove")
                     local = None
-                state = new_peer_state(peer_ip, session_id, session_started_ns)
+                state = new_peer_state(peer_ip, session_id, session_started_ns, controller)
                 STATES[key] = state
             else:
                 state["mode"] = "direct"
@@ -869,7 +1052,7 @@ def handle_offer(data):
                 state["failures"] = 0
                 state["retry_after"] = 0
         elif state is None:
-            state = new_peer_state(peer_ip, session_id, session_started_ns)
+            state = new_peer_state(peer_ip, session_id, session_started_ns, controller)
             STATES[key] = state
         else:
             current_started = int(state.get("session_started_ns", 0) or 0)
@@ -878,7 +1061,9 @@ def handle_offer(data):
             state["session_started_ns"] = session_started_ns
 
         state["session_id"] = session_id
+        state["session_started_ns"] = session_started_ns
         state["ip"] = peer_ip
+        state["controller"] = controller
         state["lease_expires"] = lease_expires
         state["control_expired"] = False
         direct = bool(
@@ -1313,6 +1498,11 @@ def main():
     monitor.daemon = True
     monitor.start()
     SERVER = ThreadingHTTPServer((LISTEN_ADDRESS, LISTEN_PORT), Handler)
+    initiator = threading.Thread(
+        target=server_initiator_loop, name="server-initiator"
+    )
+    initiator.daemon = True
+    initiator.start()
     log(
         "event agent {} listening on {}:{}".format(
             VERSION, LISTEN_ADDRESS, LISTEN_PORT
@@ -1322,6 +1512,14 @@ def main():
         SERVER.serve_forever()
     finally:
         STOP.set()
+        try:
+            coordinator_disconnect()
+        except Exception:
+            pass
+        try:
+            cleanup_initiator_states(set())
+        except Exception:
+            pass
         SERVER.server_close()
 
 

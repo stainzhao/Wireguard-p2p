@@ -103,6 +103,35 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn(client["ip"], api.LAN_CANDIDATES)
         self.assertNotIn("10.0.0.2", api.LAN_CANDIDATES)
 
+    def test_server_initiator_targets_only_higher_server(self):
+        source = {
+            "key": "server-5",
+            "ip": "10.0.0.5",
+            "role": "server",
+            "endpoint": "198.51.100.5:51820",
+        }
+        peers = [
+            {"key": "server-2", "ip": "10.0.0.2", "role": "server"},
+            source,
+            {"key": "server-8", "ip": "10.0.0.8", "role": "server"},
+        ]
+        targets = api.initiator_servers(source, peers)
+        self.assertEqual([item["ip"] for item in targets], ["10.0.0.8"])
+        self.assertTrue(api.server_initiator_owns_pair("10.0.0.2", "10.0.0.5"))
+        self.assertFalse(api.server_initiator_owns_pair("10.0.0.5", "10.0.0.2"))
+
+    def test_normal_client_still_targets_all_servers(self):
+        source = {"key": "client-4", "ip": "10.0.0.4", "role": "client"}
+        peers = [
+            source,
+            {"key": "server-2", "ip": "10.0.0.2", "role": "server"},
+            {"key": "server-5", "ip": "10.0.0.5", "role": "server"},
+        ]
+        targets = api.initiator_servers(source, peers)
+        self.assertEqual(
+            [item["ip"] for item in targets], ["10.0.0.2", "10.0.0.5"]
+        )
+
     def test_push_status_tracks_failure_and_recovery(self):
         api.record_push_result("10.0.0.2", False, "timeout")
         self.assertEqual(
@@ -147,6 +176,65 @@ class AgentTests(unittest.TestCase):
         with contextlib.redirect_stderr(output):
             agent.log_error("monitor failed")
         self.assertIn("monitor failed", output.getvalue())
+
+    def test_new_control_session_refreshes_session_start_on_healthy_direct(self):
+        key = "SCTH2DOd6XhU0QZLFCgClEKWgZPNHr6QtmPpb6S05EM="
+        old_session = "11111111-1111-4111-8111-111111111111"
+        new_session = "22222222-2222-4222-8222-222222222222"
+        old_started = agent.time_ns() - 1000000000
+        new_started = agent.time_ns()
+        state = agent.new_peer_state("10.0.0.8", old_session, old_started)
+        state["mode"] = "direct"
+        agent.STATES = {key: state}
+        local = {
+            "endpoint": "203.0.113.8:51820",
+            "allowed_ips": ["10.0.0.8/32"],
+            "latest_handshake": int(__import__("time").time()),
+            "keepalive": 25,
+        }
+        from unittest import mock
+        with mock.patch.object(agent, "local_wg_peers", return_value={key: local}), \
+             mock.patch.object(agent, "save_state"), \
+             mock.patch.object(agent, "local_ipv4", return_value="192.168.0.5"), \
+             mock.patch.object(agent, "listen_port", return_value=51820), \
+             mock.patch.object(agent, "gather_candidates", return_value=[]), \
+             mock.patch.object(agent, "current_reflexive6_candidate", return_value=None), \
+             mock.patch.object(agent, "public_key", return_value="x"):
+            agent.handle_offer({
+                "peer_key": key,
+                "peer_ip": "10.0.0.8",
+                "session_id": new_session,
+                "session_started_ns": new_started,
+                "endpoint": "203.0.113.8:51820",
+                "endpoint_type": "WAN",
+                "candidates": [{
+                    "type": "observed4",
+                    "family": "udp4",
+                    "endpoint": "203.0.113.8:51820",
+                    "priority": 700,
+                    "verified": True,
+                }],
+            })
+        self.assertEqual(agent.STATES[key]["session_id"], new_session)
+        self.assertEqual(agent.STATES[key]["session_started_ns"], new_started)
+
+    def test_server_pair_has_single_deterministic_initiator(self):
+        self.assertTrue(agent.server_initiator_owns_pair("10.0.0.2", "10.0.0.5"))
+        self.assertFalse(agent.server_initiator_owns_pair("10.0.0.5", "10.0.0.2"))
+        self.assertFalse(agent.server_initiator_owns_pair("10.0.0.5", "10.0.0.5"))
+
+    def test_server_initiator_online_filter(self):
+        now = 1000
+        peer = {
+            "key": "server-key",
+            "ip": "10.0.0.8",
+            "role": "server",
+            "endpoint": "198.51.100.8:51820",
+            "latest_handshake": now - 10,
+        }
+        self.assertTrue(agent.eligible_initiator_server(peer, now))
+        peer["latest_handshake"] = now - agent.INITIATOR_ONLINE_MAX_AGE - 1
+        self.assertFalse(agent.eligible_initiator_server(peer, now))
 
     def test_repeated_probe_failures_enter_long_cooldown(self):
         self.assertEqual(agent.retry_delay(1), 3)

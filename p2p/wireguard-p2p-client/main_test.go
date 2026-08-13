@@ -58,3 +58,15 @@ func TestRecordProbeFailure(t *testing.T) {
 		t.Fatalf("cooldown was not applied: delay=%s state=%+v", delay, state)
 	}
 }
+
+func TestServerInitiatorOwnsPair(t *testing.T) {
+	if !serverInitiatorOwnsPair("10.0.0.2", "10.0.0.5") {
+		t.Fatal("lower overlay IP should own the server pair")
+	}
+	if serverInitiatorOwnsPair("10.0.0.5", "10.0.0.2") {
+		t.Fatal("higher overlay IP must not duplicate-control the pair")
+	}
+	if serverInitiatorOwnsPair("10.0.0.2", "10.0.0.2") {
+		t.Fatal("server must never target itself")
+	}
+}

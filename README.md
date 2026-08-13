@@ -1,6 +1,6 @@
 # WireGuard P2P
 
-当前生产版本：**v7.11.0**，协议版本 7。
+当前生产版本：**v7.12.0**，协议版本 7。
 
 这是一个建立在现有 WireGuard Overlay 之上的自动 P2P Direct 项目。当前默认拓扑仍是：
 
@@ -10,6 +10,8 @@ Coordinator:  10.0.0.1
 API:          http://10.0.0.1:8899
 WG interface: wg0
 ```
+
+**v7.12 的 Server 变化：Linux `server` 现在是双能力节点。同一个 Python Agent 既响应 Client/Server 的入站协调，也会主动同步 Coordinator 并建立 Server↔Server Direct。每一对 Server 由 Overlay IP 较小的一端负责主动协调，避免双方同时修改同一个 WireGuard Peer；一旦 Direct 建立，数据面本身是双向的。无需在 Server 上额外安装普通 Linux Client。**
 
 **v7.11 的 IPv6 变化：多 GUA 主机不再把所有 `host6` 当成完全等价。Client/Server 会询问操作系统实际的 IPv6 源地址选择，将该地址以更高优先级发布，并给首选 `host6` 8 秒重叠打洞窗口；deprecated/tentative IPv6 不再发布，IPv6 Probe 会明确写入日志。**
 
@@ -23,7 +25,7 @@ WG interface: wg0
 
 ```text
 client       默认角色。没有显式配置的普通 WireGuard Peer 都是 client。
-server       可被 Client 自动发现并尝试 P2P Direct 的 Linux Server Agent。
+server       Linux 双能力 Agent：可被 Client/Server 连接，也会主动建立 Server↔Server Direct。
 relay_only   可选角色。节点保持 WireGuard Relay 基线，但不参与 P2P 协调。
 ```
 
@@ -127,7 +129,9 @@ Server 安装器会：
 自动读取本机 10.0.0.x
 向 VPS 再次验证该 IP 当前确实是 server
 领取/刷新 notify.key
-安装 Python Agent + port mapping
+安装 Python 双能力 Agent + port mapping
+Agent 内置 Server↔Server initiator，不额外安装 Linux Client
+若检测到旧的 `wireguard-p2p-client.service`，会停用它以避免两个控制器竞争同一 wg0 Peer
 安装 systemd services
 启动并重启服务
 安装结束前验证 Agent `8898/health`，并确认 Agent 与 portmap 两个 systemd 服务仍为 active；验证失败则安装命令返回失败，不再误报成功。
@@ -141,6 +145,7 @@ Server 安装器会：
 sudo wireguard-p2p version
 systemctl is-active wireguard-p2p-agent.service
 systemctl is-active wireguard-p2p-portmap.service
+# Server↔Server initiator 已集成在 wireguard-p2p-agent.service 中
 wg show wg0
 ```
 
@@ -223,9 +228,10 @@ VPS 是唯一访问私有 GitHub Release 的节点。发布物经 SHA-256 验证
 ## 5. Candidate 顺序
 
 ```text
-lan4        1000
-host6        900
-observed6    850
+lan4                  1000
+preferred host6          910
+backup host6             900
+observed6                850
 reflexive6   825
 mapped4      800
 observed4    700

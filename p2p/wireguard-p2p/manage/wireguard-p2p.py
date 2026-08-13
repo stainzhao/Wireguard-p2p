@@ -15,7 +15,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "7.11.0"
+VERSION = "7.12.0"
 API_BASE = "http://10.0.0.1:8899"
 GITHUB_REPO = os.environ.get("P2P_GITHUB_REPO", "stainzhao/p2p")
 CONFIG_DIR = Path(os.environ.get("P2P_CONFIG_DIR", "/etc/wireguard-p2p"))
@@ -251,6 +251,10 @@ def update_server(force=False):
         ]
         backup = backup_files(paths, UPDATE_STATE / "update-backup-server")
         portmap_enabled = systemctl("is-enabled", "--quiet", "wireguard-p2p-portmap.service", check=False).returncode == 0
+        client_enabled = systemctl("is-enabled", "--quiet", "wireguard-p2p-client.service", check=False).returncode == 0
+        client_active = systemctl("is-active", "--quiet", "wireguard-p2p-client.service", check=False).returncode == 0
+        if client_active:
+            systemctl("stop", "wireguard-p2p-client.service", check=False)
         try:
             INSTALL_ROOT.mkdir(parents=True, exist_ok=True)
             for name in ("p2p_agent.py", "candidates.py", "portmap.py", "portmap_daemon.py"):
@@ -270,6 +274,9 @@ def update_server(force=False):
                 try:
                     health = read_json("http://{}:8898/health".format(overlay_ip))
                     if health.get("ok") and health.get("version") == target:
+                        # The dual-capability Agent owns server initiation now.
+                        # Keep any legacy ordinary Linux Client service disabled.
+                        systemctl("disable", "wireguard-p2p-client.service", check=False)
                         print("Updated Linux server {} -> {}.".format(current, target))
                         return
                 except Exception:
@@ -282,6 +289,10 @@ def update_server(force=False):
             if portmap_enabled:
                 systemctl("restart", "wireguard-p2p-portmap.service", check=False)
             systemctl("restart", "wireguard-p2p-agent.service", check=False)
+            if client_enabled:
+                systemctl("enable", "wireguard-p2p-client.service", check=False)
+            if client_active:
+                systemctl("restart", "wireguard-p2p-client.service", check=False)
             raise
 
 

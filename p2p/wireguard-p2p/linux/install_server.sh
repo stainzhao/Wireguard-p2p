@@ -74,6 +74,9 @@ sed -e "s/__SERVICE_USER__/$SERVICE_USER/g" -e "s/__OVERLAY_IP__/$OVERLAY_IP/g" 
 sed -e "s/__SERVICE_USER__/$SERVICE_USER/g" -e "s/Environment=P2P_INTERFACE=wg0/Environment=P2P_INTERFACE=$WG_INTERFACE/" "$SCRIPT_DIR/wireguard-p2p-portmap.service" > /etc/systemd/system/wireguard-p2p-portmap.service
 install -m 0755 "$MANAGER" /usr/local/bin/wireguard-p2p
 systemctl daemon-reload
+# v7.12 server Agent already contains the initiator; never run the ordinary
+# Linux Client controller on the same WireGuard interface.
+systemctl disable --now wireguard-p2p-client.service >/dev/null 2>&1 || true
 systemctl enable wireguard-p2p-agent.service wireguard-p2p-portmap.service
 systemctl restart wireguard-p2p-portmap.service
 systemctl restart wireguard-p2p-agent.service
