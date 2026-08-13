@@ -1061,6 +1061,7 @@ def handle_offer(data, controller="responder"):
             state["session_started_ns"] = session_started_ns
 
         state["session_id"] = session_id
+        state["session_started_ns"] = session_started_ns
         state["ip"] = peer_ip
         state["controller"] = controller
         state["lease_expires"] = lease_expires

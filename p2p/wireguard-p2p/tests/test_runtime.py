@@ -167,6 +167,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("systemctl restart wireguard-p2p-client.service", client_installer)
         self.assertIn("systemctl restart wireguard-p2p-agent.service", server_installer)
         self.assertIn("systemctl restart wireguard-p2p-portmap.service", server_installer)
+        self.assertIn("disable --now wireguard-p2p-client.service", server_installer)
+        manager_source = (ROOT / "manage" / "wireguard-p2p.py").read_text(encoding="utf-8")
+        self.assertIn('systemctl("disable", "wireguard-p2p-client.service"', manager_source)
         self.assertIn("systemctl restart peers-api.service", vps_installer)
 
     def test_config_directory_is_traversable_by_service_account(self):

@@ -131,6 +131,7 @@ Server 安装器会：
 领取/刷新 notify.key
 安装 Python 双能力 Agent + port mapping
 Agent 内置 Server↔Server initiator，不额外安装 Linux Client
+若检测到旧的 `wireguard-p2p-client.service`，会停用它以避免两个控制器竞争同一 wg0 Peer
 安装 systemd services
 启动并重启服务
 安装结束前验证 Agent `8898/health`，并确认 Agent 与 portmap 两个 systemd 服务仍为 active；验证失败则安装命令返回失败，不再误报成功。
