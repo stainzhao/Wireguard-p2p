@@ -24,7 +24,18 @@ jobs:
           go-version-file: p2p/wireguard-p2p-client/go.mod
           cache-dependency-path: p2p/wireguard-p2p-client/go.mod
       - name: Apply v7.12.1 transformation
-        run: python tools/apply_v7121_fast_recovery.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply_v7121_fast_recovery.py')
+          text = path.read_text(encoding='utf-8')
+          old = 'replace_once(main_go, old_reconcile, new_reconcile)'
+          new = 'replace_once("p2p/wireguard-p2p-client/probe.go", old_reconcile, new_reconcile)'
+          if text.count(old) != 1:
+              raise SystemExit('unexpected reconcile transform anchor')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          python tools/apply_v7121_fast_recovery.py
       - name: Format Go
         run: gofmt -w p2p/wireguard-p2p-client/main.go p2p/wireguard-p2p-client/main_test.go p2p/wireguard-p2p-client/probe.go
       - name: Compile and test Python
