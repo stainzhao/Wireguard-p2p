@@ -1,6 +1,8 @@
 # WireGuard P2P
 
-当前生产版本：**v7.12.0**，协议版本 7。
+当前生产版本：**v7.12.1**，协议版本 7。
+
+**v7.12.1 的恢复变化：每个运行中的 Client/Server 都会向 Coordinator 发布随机 `instance_id`。节点重启或 Agent/Client 进程重启后该 ID 立即变化；对端在下一次控制同步时会废弃旧 `/32` Direct 并马上重新 Probe，不再等待 180 秒 handshake stale。Candidate 集发生变化时，也只有当前 Direct endpoint 仍明确存在于新 Candidate 集中才会继续保留 Direct。**
 
 这是一个建立在现有 WireGuard Overlay 之上的自动 P2P Direct 项目。当前默认拓扑仍是：
 

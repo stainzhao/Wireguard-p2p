@@ -21,8 +21,8 @@ api = load_module("api_ipv4", ROOT / "vps" / "peers_api.py")
 
 class IPv4PunchTests(unittest.TestCase):
     def test_release_versions(self):
-        self.assertEqual(agent.VERSION, "7.12.0")
-        self.assertEqual(api.VERSION, "7.12.0")
+        self.assertEqual(agent.VERSION, "7.12.1")
+        self.assertEqual(api.VERSION, "7.12.1")
 
     def test_priorities(self):
         self.assertEqual(candidates.PRIORITY["mapped4"], 800)

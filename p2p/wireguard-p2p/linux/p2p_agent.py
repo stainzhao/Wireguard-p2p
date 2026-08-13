@@ -41,7 +41,8 @@ def time_ns():
         return native()
     return int(time.time() * 1000000000)
 
-VERSION = "7.12.0"
+VERSION = "7.12.1"
+INSTANCE_ID = uuid.uuid4().hex
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
 LISTEN_PORT = int(os.environ.get("P2P_LISTEN_PORT", "8898"))
@@ -473,6 +474,7 @@ def coordinator_sync_once():
     lan_ip, wg_port, local_candidates = local_candidate_snapshot()
     payload = json.dumps({
         "protocol": 7,
+        "instance_id": INSTANCE_ID,
         "lan_ip": lan_ip,
         "listen_port": wg_port,
         "candidates": local_candidates,
@@ -559,6 +561,7 @@ def server_initiator_once():
             handle_offer({
                 "peer_key": key,
                 "peer_ip": peer.get("ip", ""),
+                "peer_instance_id": peer.get("instance_id", ""),
                 "session_id": session_id,
                 "session_started_ns": session_started_ns,
                 "endpoint": endpoint,
@@ -978,11 +981,12 @@ def launch_probe(key, generation):
     thread.start()
 
 
-def new_peer_state(peer_ip, session_id, session_started_ns, controller="responder"):
+def new_peer_state(peer_ip, session_id, session_started_ns, controller="responder", peer_instance_id=""):
     return {
         "controller": controller,
         "session_id": session_id,
         "session_started_ns": session_started_ns,
+        "peer_instance_id": peer_instance_id,
         "ip": peer_ip,
         "mode": "idle",
         "endpoint": "",
@@ -1006,6 +1010,12 @@ def handle_offer(data, controller="responder"):
     peer_ip = validate_peer_ip(data["peer_ip"])
     session_id = validate_session_id(data["session_id"])
     session_started_ns = validate_session_started_ns(data["session_started_ns"])
+    peer_instance_id = ""
+    if data.get("peer_instance_id"):
+        try:
+            peer_instance_id = uuid.UUID(str(data.get("peer_instance_id"))).hex
+        except (ValueError, AttributeError, TypeError):
+            raise ValueError("invalid peer instance id")
     advertised = validate_candidates(data.get("candidates", []))
     legacy_endpoint = (
         validate_endpoint(data["endpoint"]) if data.get("endpoint") else ""
@@ -1026,8 +1036,24 @@ def handle_offer(data, controller="responder"):
         current = local_wg_peers()
         local = current.get(key)
         state = STATES.get(key)
+        instance_changed = bool(
+            state is not None
+            and peer_instance_id
+            and state.get("peer_instance_id", "") != peer_instance_id
+        )
 
-        if state is not None and state.get("session_id") != session_id:
+        if instance_changed:
+            state["generation"] = int(state.get("generation", 0)) + 1
+            state["worker_running"] = False
+            if local:
+                wg_set("peer", key, "remove")
+                local = None
+            state = new_peer_state(
+                peer_ip, session_id, session_started_ns, controller, peer_instance_id
+            )
+            STATES[key] = state
+            log("peer instance changed {}; retrying P2P now".format(peer_ip))
+        elif state is not None and state.get("session_id") != session_id:
             current_started = int(state.get("session_started_ns", 0) or 0)
             if current_started and session_started_ns <= current_started:
                 return {
@@ -1044,7 +1070,7 @@ def handle_offer(data, controller="responder"):
                 if local:
                     wg_set("peer", key, "remove")
                     local = None
-                state = new_peer_state(peer_ip, session_id, session_started_ns, controller)
+                state = new_peer_state(peer_ip, session_id, session_started_ns, controller, peer_instance_id)
                 STATES[key] = state
             else:
                 state["mode"] = "direct"
@@ -1052,7 +1078,7 @@ def handle_offer(data, controller="responder"):
                 state["failures"] = 0
                 state["retry_after"] = 0
         elif state is None:
-            state = new_peer_state(peer_ip, session_id, session_started_ns, controller)
+            state = new_peer_state(peer_ip, session_id, session_started_ns, controller, peer_instance_id)
             STATES[key] = state
         else:
             current_started = int(state.get("session_started_ns", 0) or 0)
@@ -1062,6 +1088,8 @@ def handle_offer(data, controller="responder"):
 
         state["session_id"] = session_id
         state["session_started_ns"] = session_started_ns
+        if peer_instance_id:
+            state["peer_instance_id"] = peer_instance_id
         state["ip"] = peer_ip
         state["controller"] = controller
         state["lease_expires"] = lease_expires
@@ -1083,11 +1111,8 @@ def handle_offer(data, controller="responder"):
                 direct
                 and local.get("latest_handshake")
                 and now - local["latest_handshake"] <= DIRECT_MAX_AGE
-                and (
-                    candidate_endpoint_exists(
-                        candidates, local.get("endpoint", "")
-                    )
-                    or observed_type_for_endpoint(local.get("endpoint", "")) in ("observed6", "observed4")
+                and candidate_endpoint_exists(
+                    candidates, local.get("endpoint", "")
                 )
             ):
                 state.update({
@@ -1166,6 +1191,7 @@ def handle_offer(data, controller="responder"):
         "version": VERSION,
         "protocol": 7,
         "session_id": session_id,
+        "instance_id": INSTANCE_ID,
         "key": public_key(),
         "ip": LISTEN_ADDRESS,
         "lan_ip": lan_ip,

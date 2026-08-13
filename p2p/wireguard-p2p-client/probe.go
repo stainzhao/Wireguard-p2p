@@ -99,23 +99,34 @@ func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 		a.mu.Lock()
 		state := a.states[peer.Key]
 		if state == nil {
-			state = &peerState{Mode: "idle", Generation: 1}
+			state = &peerState{Mode: "idle", Generation: 1, PeerInstanceID: peer.InstanceID}
 			a.states[peer.Key] = state
+		}
+		instanceChanged := serverInstanceChanged(state.PeerInstanceID, peer.InstanceID)
+		if peer.InstanceID != "" {
+			state.PeerInstanceID = peer.InstanceID
 		}
 		state.Candidates = append([]Candidate(nil), candidates...)
 
 		direct := exists && contains(local.AllowedIPs, serverIP+"/32")
 		signatureChanged := state.CandidateSignature != signature
-		if signatureChanged {
-			state.CandidateSignature = signature
+		topologyChanged := signatureChanged || instanceChanged
+		if topologyChanged {
+			if signatureChanged {
+				state.CandidateSignature = signature
+			}
 			state.Generation++
 			state.Failures = 0
 			state.RetryAfter = 0
 			state.WorkerRunning = false
 
-			if direct && local.LatestHandshake > 0 && now-local.LatestHandshake <= int64(directMaxAge/time.Second) &&
-				(candidateEndpointExists(candidates, local.Endpoint) ||
-					(observedTypeForEndpoint(local.Endpoint) == "observed6" || observedTypeForEndpoint(local.Endpoint) == "observed4")) {
+			// A changed process instance is authoritative reboot evidence.  Never
+			// preserve the old /32 Direct in that case.  For candidate-only changes,
+			// keep a healthy Direct only when its exact learned endpoint is still
+			// present in the newly advertised candidate set.
+			if !instanceChanged && direct && local.LatestHandshake > 0 &&
+				now-local.LatestHandshake <= int64(directMaxAge/time.Second) &&
+				candidateEndpointExists(candidates, local.Endpoint) {
 				state.Mode = "direct"
 				state.Endpoint = local.Endpoint
 				state.SelectedType = candidateTypeForEndpoint(candidates, local.Endpoint)
@@ -134,7 +145,11 @@ func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 			state.Endpoint = ""
 			state.SelectedType = ""
 			state.Started = 0
-			a.log("Candidates changed for " + serverIP + "; retrying now.")
+			if instanceChanged {
+				a.log("Server restarted " + serverIP + "; retrying P2P now.")
+			} else {
+				a.log("Candidates changed for " + serverIP + "; retrying now.")
+			}
 		}
 
 		if direct {
