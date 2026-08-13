@@ -24,7 +24,7 @@ def time_ns():
         return native()
     return int(time.time() * 1000000000)
 
-VERSION = "7.12.0"
+VERSION = "7.12.1"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
 AGENT_PORT = 8898
@@ -374,6 +374,12 @@ def peer_payload(peers=None):
                 peer["lan_endpoint"] = ""
                 peer["lan_seen"] = 0
                 legacy_lan = []
+            session = SESSIONS.get(peer["ip"], {})
+            peer["instance_id"] = (
+                session.get("instance_id", "")
+                if now - float(session.get("last_seen", 0) or 0) <= SESSION_TTL
+                else ""
+            )
             stored = NODE_CANDIDATES.get(peer["ip"], {}).get("candidates", [])
             observed = observed_candidate(peer.get("endpoint", ""))
             predictions = [] if any(
@@ -396,6 +402,15 @@ def validate_announcement(data):
     if not 1 <= listen_port <= 65535:
         raise ValueError("invalid listen port")
     return str(lan_ip), listen_port
+
+
+def validate_instance_id(value):
+    if value in (None, ""):
+        return ""
+    try:
+        return uuid.UUID(str(value)).hex
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError("invalid instance id")
 
 
 def record_candidate(overlay_ip, lan_ip, listen_port):
@@ -455,6 +470,7 @@ def offer_fingerprint(client, client_lan_endpoint, client_candidates, server, se
     return "|".join([
         session_id,
         client.get("key", ""),
+        client.get("instance_id", ""),
         client.get("endpoint", ""),
         client_lan_endpoint,
         json.dumps(client_candidates, separators=(",", ":"), sort_keys=True),
@@ -494,6 +510,7 @@ def push_offer(server, client, client_lan_endpoint, client_candidates, session_i
         "session_started_ns": session_started_ns,
         "peer_key": client["key"],
         "peer_ip": client["ip"],
+        "peer_instance_id": client.get("instance_id", ""),
         "endpoint": candidate,
         "endpoint_type": "LAN" if same_nat else "WAN",
         "candidates": candidates,
@@ -533,16 +550,23 @@ def initiator_servers(initiator, peers):
     return result
 
 
-def coordinate_client(client, client_lan_endpoint, peers, client_candidates=None, force=False):
+def coordinate_client(client, client_lan_endpoint, peers, client_candidates=None, force=False, instance_id=""):
     now = time.time()
     client_candidates = client_candidates or []
+    if instance_id:
+        client = dict(client)
+        client["instance_id"] = instance_id
     servers = initiator_servers(client, peers)
     stale_session = None
 
     with COORDINATE_LOCK:
         with STATE_LOCK:
             existing = SESSIONS.get(client["ip"])
-            is_new_session = existing is None or existing.get("key") != client["key"]
+            is_new_session = (
+                existing is None
+                or existing.get("key") != client["key"]
+                or bool(instance_id and existing.get("instance_id", "") != instance_id)
+            )
             if is_new_session:
                 stale_session = existing
                 session = {
@@ -550,6 +574,7 @@ def coordinate_client(client, client_lan_endpoint, peers, client_candidates=None
                     "session_started_ns": time_ns(),
                     "key": client["key"],
                     "ip": client["ip"],
+                    "instance_id": instance_id,
                     "last_seen": now,
                     "last_push": {},
                     "fingerprints": {},
@@ -564,6 +589,8 @@ def coordinate_client(client, client_lan_endpoint, peers, client_candidates=None
                 if not session.get("session_started_ns"):
                     session["session_started_ns"] = time_ns()
                 session["key"] = client["key"]
+                if instance_id:
+                    session["instance_id"] = instance_id
                 session["last_seen"] = now
                 session["candidates"] = list(client_candidates)
 
@@ -860,6 +887,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
 
             lan_ip, listen_port = validate_announcement(data)
+            instance_id = validate_instance_id(data.get("instance_id", ""))
+            if instance_id:
+                source = dict(source)
+                source["instance_id"] = instance_id
             record_candidate(source["ip"], lan_ip, listen_port)
             advertised = validate_candidates(
                 data.get("candidates", []), allow_observed=False
@@ -871,7 +902,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             session_id = ""
             if source.get("role") in ("client", "server"):
                 session_id = coordinate_client(
-                    source, lan_endpoint, peers, advertised
+                    source, lan_endpoint, peers, advertised, instance_id=instance_id
                 )
 
             if self.path in ("/sync", "/connect"):

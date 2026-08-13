@@ -59,6 +59,21 @@ func TestRecordProbeFailure(t *testing.T) {
 	}
 }
 
+func TestServerInstanceChanged(t *testing.T) {
+	if serverInstanceChanged("", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") {
+		t.Fatal("first observation must not look like a reboot")
+	}
+	if serverInstanceChanged("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") {
+		t.Fatal("same instance must remain stable")
+	}
+	if !serverInstanceChanged("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") {
+		t.Fatal("changed instance must trigger fast recovery")
+	}
+	if got := newInstanceID(); len(got) != 32 {
+		t.Fatalf("instance id length = %d, want 32", len(got))
+	}
+}
+
 func TestServerInitiatorOwnsPair(t *testing.T) {
 	if !serverInitiatorOwnsPair("10.0.0.2", "10.0.0.5") {
 		t.Fatal("lower overlay IP should own the server pair")

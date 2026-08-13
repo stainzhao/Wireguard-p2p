@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,7 +19,7 @@ import (
 )
 
 const (
-	version          = "7.12.0"
+	version          = "7.12.1"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
@@ -35,10 +36,23 @@ var (
 	errDeviceNotRegistered = errors.New("this device is not registered/online on the VPS")
 )
 
+func newInstanceID() string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err == nil {
+		return fmt.Sprintf("%x", value)
+	}
+	return fmt.Sprintf("%032x", uint64(time.Now().UnixNano()))
+}
+
+func serverInstanceChanged(previous, current string) bool {
+	return current != "" && previous != "" && previous != current
+}
+
 type apiPeer struct {
 	Key             string      `json:"key"`
 	IP              string      `json:"ip"`
 	Role            string      `json:"role"`
+	InstanceID      string      `json:"instance_id"`
 	Endpoint        string      `json:"endpoint"`
 	LatestHandshake int64       `json:"latest_handshake"`
 	LanEndpoint     string      `json:"lan_endpoint"`
@@ -62,6 +76,7 @@ type peerState struct {
 	SelectedType       string
 	Candidates         []Candidate
 	CandidateSignature string
+	PeerInstanceID     string
 	Started            int64
 	BaselineHandshake  int64
 	Failures           int
@@ -74,6 +89,7 @@ type app struct {
 	preferredInterface string
 	interfaceName      string
 	wgPath             string
+	instanceID         string
 	httpClient         *http.Client
 	states             map[string]*peerState
 	serverKeys         map[string]string
@@ -126,6 +142,7 @@ func main() {
 	a := &app{
 		preferredInterface: *preferred,
 		wgPath:             wgPath,
+		instanceID:         newInstanceID(),
 		httpClient: &http.Client{
 			Timeout:   3 * time.Second,
 			Transport: &http.Transport{Proxy: nil},
@@ -417,6 +434,7 @@ func (a *app) apiGet(path string, output any) error {
 func (a *app) apiSync(lanIP string, listenPort int, candidates []Candidate) ([]apiPeer, error) {
 	payload := map[string]any{
 		"protocol":    7,
+		"instance_id": a.instanceID,
 		"lan_ip":      lanIP,
 		"listen_port": listenPort,
 		"candidates":  candidates,

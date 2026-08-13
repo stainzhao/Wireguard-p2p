@@ -1,4 +1,4 @@
-# Current architecture — v7.12.0
+# Current architecture — v7.12.1
 
 ## 1. Control/relay baseline
 
