@@ -36,6 +36,22 @@ jobs:
           path.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
           python tools/apply_v7121_fast_recovery.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('p2p/wireguard-p2p/tests/test_fast_recovery.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              'os.environ.setdefault("P2P_LISTEN_ADDRESS", "10.0.0.2")',
+              'os.environ.setdefault("P2P_LISTEN_ADDRESS", "10.0.0.5")',
+              1,
+          )
+          marker = 'class AgentInstanceTests(unittest.TestCase):'
+          head, tail = text.split(marker, 1)
+          tail = tail.replace('"10.0.0.5"', '"10.0.0.8"')
+          tail = tail.replace('"10.0.0.5/32"', '"10.0.0.8/32"')
+          tail = tail.replace('"198.51.100.5:51820"', '"198.51.100.8:51820"')
+          path.write_text(head + marker + tail, encoding='utf-8')
+          PY
       - name: Format Go
         run: gofmt -w p2p/wireguard-p2p-client/main.go p2p/wireguard-p2p-client/main_test.go p2p/wireguard-p2p-client/probe.go
       - name: Compile and test Python
