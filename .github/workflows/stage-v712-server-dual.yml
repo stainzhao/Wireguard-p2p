@@ -1,0 +1,52 @@
+name: stage-v712-server-dual
+
+on:
+  push:
+    branches: [work/v7.12-server-dual-capability]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/v7.12-server-dual-capability
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: p2p/wireguard-p2p-client/go.mod
+          cache-dependency-path: p2p/wireguard-p2p-client/go.mod
+      - name: Apply v7.12 transformation
+        run: python tools/apply_v712_server_dual.py
+      - name: Format Go
+        run: gofmt -w p2p/wireguard-p2p-client/main.go p2p/wireguard-p2p-client/main_test.go p2p/wireguard-p2p-client/probe.go
+      - name: Compile and test Python
+        run: |
+          python -m compileall -q p2p/wireguard-p2p/linux p2p/wireguard-p2p/vps p2p/wireguard-p2p/manage p2p/wireguard-p2p/bootstrap
+          python -m unittest discover -s p2p/wireguard-p2p/tests -v
+      - name: Python 3.6 compatibility
+        run: sh ci/test-python36.sh
+      - name: Test and vet Go client
+        working-directory: p2p/wireguard-p2p-client
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/wireguard-p2p.exe .
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/wireguard-p2p-linux .
+      - name: Commit generated source
+        run: |
+          git status --short
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md p2p
+          git diff --cached --check
+          git commit -m 'feat: make Linux servers dual-capability peers'
+          git push origin HEAD:work/v7.12-server-dual-capability
