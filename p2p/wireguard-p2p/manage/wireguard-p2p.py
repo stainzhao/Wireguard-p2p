@@ -15,7 +15,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "7.11.0"
+VERSION = "7.12.0"
 API_BASE = "http://10.0.0.1:8899"
 GITHUB_REPO = os.environ.get("P2P_GITHUB_REPO", "stainzhao/p2p")
 CONFIG_DIR = Path(os.environ.get("P2P_CONFIG_DIR", "/etc/wireguard-p2p"))

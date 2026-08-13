@@ -22,8 +22,8 @@ api = load_module("api_ipv6", ROOT / "vps" / "peers_api.py")
 
 class IPv6PunchTests(unittest.TestCase):
     def test_current_release_versions_match(self):
-        self.assertEqual(agent.VERSION, "7.11.0")
-        self.assertEqual(api.VERSION, "7.11.0")
+        self.assertEqual(agent.VERSION, "7.12.0")
+        self.assertEqual(api.VERSION, "7.12.0")
 
     def test_deprecated_ipv6_lifetime_is_rejected(self):
         self.assertTrue(candidates.ipv6_address_info_unusable({

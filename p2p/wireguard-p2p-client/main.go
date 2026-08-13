@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	version          = "7.11.0"
+	version          = "7.12.0"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
@@ -483,6 +483,15 @@ func (a *app) apiPost(path string, input, output any) error {
 	}
 	_, _ = io.Copy(io.Discard, response.Body)
 	return nil
+}
+
+func serverInitiatorOwnsPair(localIP, remoteIP string) bool {
+	local := net.ParseIP(localIP).To4()
+	remote := net.ParseIP(remoteIP).To4()
+	if local == nil || remote == nil || bytes.Equal(local, remote) {
+		return false
+	}
+	return bytes.Compare(local, remote) < 0
 }
 
 func endpointIP(endpoint string) string {

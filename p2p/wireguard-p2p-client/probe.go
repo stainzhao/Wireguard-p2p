@@ -60,9 +60,13 @@ func (a *app) reconcilePeers(peers []apiPeer, ownKey string) error {
 	active := make(map[string]bool)
 	currentServers := make(map[string]string)
 	for _, peer := range peers {
-		if peer.Role == "server" && peer.Key != "" && peer.IP != "" {
-			currentServers[peer.Key] = peer.IP
+		if peer.Role != "server" || peer.Key == "" || peer.IP == "" || peer.Key == ownKey {
+			continue
 		}
+		if ours.Role == "server" && !serverInitiatorOwnsPair(ours.IP, peer.IP) {
+			continue
+		}
+		currentServers[peer.Key] = peer.IP
 	}
 	a.mu.Lock()
 	previousServers := make(map[string]string, len(a.serverKeys))

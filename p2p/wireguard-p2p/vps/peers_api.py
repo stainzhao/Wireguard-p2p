@@ -24,7 +24,7 @@ def time_ns():
         return native()
     return int(time.time() * 1000000000)
 
-VERSION = "7.11.0"
+VERSION = "7.12.0"
 LISTEN_ADDRESS = "10.0.0.1"
 LISTEN_PORT = 8899
 AGENT_PORT = 8898
@@ -501,10 +501,42 @@ def push_offer(server, client, client_lan_endpoint, client_candidates, session_i
     })
 
 
+def server_initiator_owns_pair(local_ip, remote_ip):
+    try:
+        local = ipaddress.ip_address(local_ip)
+        remote = ipaddress.ip_address(remote_ip)
+    except ValueError:
+        return False
+    return (
+        local.version == 4
+        and remote.version == 4
+        and local != remote
+        and int(local) < int(remote)
+    )
+
+
+def initiator_servers(initiator, peers):
+    result = []
+    for peer in peers:
+        if peer.get("role") != "server":
+            continue
+        if not peer.get("key") or not peer.get("ip"):
+            continue
+        if peer.get("key") == initiator.get("key") or peer.get("ip") == initiator.get("ip"):
+            continue
+        if (
+            initiator.get("role") == "server"
+            and not server_initiator_owns_pair(initiator.get("ip", ""), peer.get("ip", ""))
+        ):
+            continue
+        result.append(peer)
+    return result
+
+
 def coordinate_client(client, client_lan_endpoint, peers, client_candidates=None, force=False):
     now = time.time()
     client_candidates = client_candidates or []
-    servers = [peer for peer in peers if peer.get("role") == "server"]
+    servers = initiator_servers(client, peers)
     stale_session = None
 
     with COORDINATE_LOCK:
@@ -636,7 +668,7 @@ def push_remove(session, reason="disconnect"):
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_map = {
             executor.submit(signed_post, server_ip, "/remove", payload): server_ip
-            for server_ip in server_ips()
+            for server_ip in server_ips() if server_ip != session.get("ip")
         }
         for future, server_ip in future_map.items():
             try:
@@ -818,7 +850,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
 
             if self.path == "/disconnect":
-                if source.get("role") == "client":
+                if source.get("role") in ("client", "server"):
                     disconnect_client(source)
                 self.send_json(200, {
                     "ok": True,
@@ -837,7 +869,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             record_node_candidates(source["ip"], advertised)
             lan_endpoint = "{}:{}".format(lan_ip, listen_port)
             session_id = ""
-            if source.get("role") == "client":
+            if source.get("role") in ("client", "server"):
                 session_id = coordinate_client(
                     source, lan_endpoint, peers, advertised
                 )
@@ -850,6 +882,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 }
                 if session_id:
                     response["session_id"] = session_id
+                    with STATE_LOCK:
+                        current_session = SESSIONS.get(source["ip"], {})
+                        if current_session.get("session_id") == session_id:
+                            response["session_started_ns"] = int(
+                                current_session.get("session_started_ns", 0) or 0
+                            )
                 self.send_json(200, response)
             else:
                 response = {
@@ -859,6 +897,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 }
                 if session_id:
                     response["session_id"] = session_id
+                    with STATE_LOCK:
+                        current_session = SESSIONS.get(source["ip"], {})
+                        if current_session.get("session_id") == session_id:
+                            response["session_started_ns"] = int(
+                                current_session.get("session_started_ns", 0) or 0
+                            )
                 self.send_json(200, response)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": str(exc)})

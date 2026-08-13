@@ -1,4 +1,4 @@
-# Current architecture — v7.11.0
+# Current architecture — v7.12.0
 
 ## 1. Control/relay baseline
 
@@ -9,7 +9,7 @@ VPS `10.0.0.1` 同时承担 Coordinator/control plane 和 WireGuard `/24` Relay�
 具体 IP 尾号不再进入程序逻辑。除 Coordinator/network/broadcast 地址外，Overlay Peer 默认是 `client`；VPS 可显式配置：
 
 ```text
-server       -> Linux Python Agent，可被 Client 动态发现
+server       -> Linux 双能力 Python Agent，可响应连接并主动协调其他 Server
 relay_only   -> 不参与 P2P 协调，只保留基础 Relay
 client       -> 默认，无需注册
 ```
@@ -23,7 +23,11 @@ client       -> 默认，无需注册
 
 Coordinator 的 `peer_payload()` 将实时角色返回给 Go Client，因此新增/删除 Server 不要求重编译 Client。Server bootstrap key 只向当前 `server` 角色 IP 返回。
 
-## 3. Candidate priority
+## 3. Server↔Server ownership
+
+Server Agent 内置 responder 与 initiator 两种能力。为避免一对 Server 的两端同时修改同一 WireGuard Peer，Coordinator 和 Agent 使用一致的确定性规则：Overlay IPv4 数值较小的一端负责主动发起该 Server↔Server 会话，较大的一端响应 VPS `/offer`。这只决定控制权；fresh handshake 成功后的 `/32` Direct 数据面始终双向。普通 Client 仍会主动尝试全部 Server。
+
+## 4. Candidate priority
 
 ```text
 lan4                  1000
@@ -39,14 +43,14 @@ VPS /24      baseline
 
 Native IPv6 会先按 OS 实际 source-address selection 选出 preferred host6；首选地址对使用 8 秒 overlap window，备用 GUA 再按顺序探测。deprecated/tentative 地址不发布。IPv6 NAT66 simultaneous punch、IPv4 observed4 simultaneous punch、bounded predicted4、PCP/NAT-PMP/UPnP mapped4 均继续遵守 fresh-handshake promotion。
 
-## 4. Security and lifecycle
+## 5. Security and lifecycle
 
 VPS -> Server Agent 使用 HMAC-SHA256，带 timestamp、128-bit nonce 和 session identity。旧 session 不能覆盖新 session。Control lease 与健康 Direct 解耦；Direct 健康由真实 WireGuard handshake 和 `/32` route 判断。
 
-## 5. Cross-platform Client
+## 6. Cross-platform Client
 
 Windows amd64、Linux amd64、Linux arm64 使用同一 Go core。Client 从 Coordinator 返回的 `role=server` 动态构造目标集合，不包含固定 Server 公钥/IP 表。
 
-## 6. Genericity boundary
+## 7. Genericity boundary
 
 v7.10 去除了具体节点 `.2/.5/.8` 的硬编码。默认网络拓扑仍为 `10.0.0.0/24`、Coordinator `10.0.0.1`、接口 `wg0`；这是下一层可参数化配置，不影响当前任意 `.x` 节点的动态角色能力。

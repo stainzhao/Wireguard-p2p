@@ -50,8 +50,8 @@ class RuntimeTests(unittest.TestCase):
         }
 
     def test_release_and_resource_constants(self):
-        self.assertEqual(agent.VERSION, "7.11.0")
-        self.assertEqual(api.VERSION, "7.11.0")
+        self.assertEqual(agent.VERSION, "7.12.0")
+        self.assertEqual(api.VERSION, "7.12.0")
         self.assertEqual(agent.DIRECT_MONITOR_INTERVAL, 30)
         self.assertEqual(agent.IDLE_MONITOR_INTERVAL, 60)
         self.assertEqual(agent.REFLEXIVE6_REFRESH_INTERVAL, 600)
@@ -59,6 +59,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(api.SESSION_TTL, 180)
         self.assertEqual(api.OFFER_REFRESH, 120)
         self.assertEqual(api.ANNOUNCE_TTL, 300)
+        self.assertEqual(agent.INITIATOR_SYNC_INTERVAL, 15)
+        self.assertEqual(agent.INITIATOR_ONLINE_MAX_AGE, 180)
 
     def test_runtime_state_is_ram_backed(self):
         self.assertTrue(agent.STATE_FILE.startswith("/run/"))
@@ -140,6 +142,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(payloads), len(api.server_ips()))
         self.assertTrue(all(item["reason"] == "expired" for item in payloads))
 
+
+    def test_server_dual_capability_is_integrated_into_agent(self):
+        source = (LINUX / "p2p_agent.py").read_text(encoding="utf-8")
+        self.assertIn("def server_initiator_loop", source)
+        self.assertIn("COORDINATOR_SYNC_URL", source)
+        self.assertIn('controller="initiator"', source)
+        self.assertNotIn("wireguard-p2p-initiator.service", source)
 
     def test_managed_update_distribution(self):
         self.assertEqual(api.update_asset_path("/updates/manifest.json").endswith("/manifest.json"), True)

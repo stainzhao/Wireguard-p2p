@@ -94,7 +94,8 @@ class GenericRoleTests(unittest.TestCase):
         main = (client_root / "main.go").read_text(encoding="utf-8")
         probe = (client_root / "probe.go").read_text(encoding="utf-8")
         self.assertIn('Role            string      `json:"role"`', main)
-        self.assertIn('peer.Role == "server"', probe)
+        self.assertIn('peer.Role != "server"', probe)
+        self.assertIn('serverInitiatorOwnsPair', probe)
         self.assertNotIn("serverKeys = map", main)
 
 
