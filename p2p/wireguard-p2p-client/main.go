@@ -24,11 +24,11 @@ const (
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
 	directMaxAge     = 3 * time.Minute
-	failureCooldown  = 30 * time.Minute
-	activeInterval   = 15 * time.Second
-	stableInterval   = 60 * time.Second
+	failureCooldown  = 5 * time.Minute
+	activeInterval   = 10 * time.Second
+	stableInterval   = 20 * time.Second
 	inactiveInterval = 3 * time.Second
-	maxFailureDelay  = 60 * time.Second
+	maxFailureDelay  = 30 * time.Second
 	errorLogInterval = 5 * time.Minute
 )
 
@@ -547,9 +547,11 @@ func contains(values []string, target string) bool {
 func retryDelay(failures int) time.Duration {
 	switch failures {
 	case 1:
-		return time.Minute
+		return 15 * time.Second
 	case 2:
-		return 2 * time.Minute
+		return 30 * time.Second
+	case 3:
+		return time.Minute
 	default:
 		return failureCooldown
 	}
