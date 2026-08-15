@@ -50,17 +50,19 @@ class RuntimeTests(unittest.TestCase):
         }
 
     def test_release_and_resource_constants(self):
-        self.assertEqual(agent.VERSION, "7.12.1")
-        self.assertEqual(api.VERSION, "7.12.1")
-        self.assertEqual(agent.DIRECT_MONITOR_INTERVAL, 30)
+        self.assertEqual(agent.VERSION, "7.13.0")
+        self.assertEqual(api.VERSION, "7.13.0")
+        self.assertEqual(agent.DIRECT_MONITOR_INTERVAL, 20)
         self.assertEqual(agent.IDLE_MONITOR_INTERVAL, 60)
         self.assertEqual(agent.REFLEXIVE6_REFRESH_INTERVAL, 600)
         self.assertEqual(agent.REFLEXIVE6_TTL, 1800)
         self.assertEqual(api.SESSION_TTL, 180)
         self.assertEqual(api.OFFER_REFRESH, 120)
         self.assertEqual(api.ANNOUNCE_TTL, 300)
-        self.assertEqual(agent.INITIATOR_SYNC_INTERVAL, 15)
+        self.assertEqual(agent.INITIATOR_SYNC_INTERVAL, 10)
         self.assertEqual(agent.INITIATOR_ONLINE_MAX_AGE, 180)
+        self.assertEqual(agent.RETRY_DELAYS, (3, 10, 30, 60))
+        self.assertEqual(agent.FAILURE_COOLDOWN, 300)
 
     def test_runtime_state_is_ram_backed(self):
         self.assertTrue(agent.STATE_FILE.startswith("/run/"))

@@ -1,4 +1,4 @@
-# Current architecture — v7.12.1
+# Current architecture — v7.13.0
 
 ## 1. Control/relay baseline
 
@@ -54,3 +54,8 @@ Windows amd64、Linux amd64、Linux arm64 使用同一 Go core。Client 从 Coor
 ## 7. Genericity boundary
 
 v7.10 去除了具体节点 `.2/.5/.8` 的硬编码。默认网络拓扑仍为 `10.0.0.0/24`、Coordinator `10.0.0.1`、接口 `wg0`；这是下一层可参数化配置，不影响当前任意 `.x` 节点的动态角色能力。
+
+
+### v7.13.0 recovery behavior
+
+v7.13.0 separates data-plane performance from control-plane recovery. Established Direct peers are not periodically rebuilt or rate-limited. Faster Coordinator observation and bounded retry backoff only reduce the time a recoverable peer spends on VPS Relay after restart, address change, or transient path failure.
