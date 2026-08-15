@@ -32,10 +32,11 @@ func TestContains(t *testing.T) {
 
 func TestRetryDelayEntersCooldown(t *testing.T) {
 	tests := map[int]time.Duration{
-		1:  time.Minute,
-		2:  2 * time.Minute,
-		3:  30 * time.Minute,
-		20: 30 * time.Minute,
+		1:  15 * time.Second,
+		2:  30 * time.Second,
+		3:  time.Minute,
+		4:  5 * time.Minute,
+		20: 5 * time.Minute,
 	}
 	for failures, want := range tests {
 		if got := retryDelay(failures); got != want {
@@ -46,15 +47,20 @@ func TestRetryDelayEntersCooldown(t *testing.T) {
 
 func TestRecordProbeFailure(t *testing.T) {
 	state := &peerState{Mode: "probe", Started: 900, BaselineHandshake: 123}
-	if delay := recordProbeFailure(state, 1000); delay != time.Minute {
+	if delay := recordProbeFailure(state, 1000); delay != 15*time.Second {
 		t.Fatalf("first delay = %s", delay)
 	}
-	if state.Mode != "idle" || state.Started != 0 || state.BaselineHandshake != 0 || state.RetryAfter != 1060 {
+	if state.Mode != "idle" || state.Started != 0 || state.BaselineHandshake != 0 || state.RetryAfter != 1015 {
 		t.Fatalf("unexpected state after first failure: %+v", state)
 	}
-	recordProbeFailure(state, 1060)
-	delay := recordProbeFailure(state, 1180)
-	if delay != failureCooldown || state.RetryAfter != 2980 {
+	if delay := recordProbeFailure(state, 1060); delay != 30*time.Second || state.RetryAfter != 1090 {
+		t.Fatalf("unexpected state after second failure: delay=%s state=%+v", delay, state)
+	}
+	if delay := recordProbeFailure(state, 1180); delay != time.Minute || state.RetryAfter != 1240 {
+		t.Fatalf("unexpected state after third failure: delay=%s state=%+v", delay, state)
+	}
+	delay := recordProbeFailure(state, 1240)
+	if delay != failureCooldown || state.RetryAfter != 1540 {
 		t.Fatalf("cooldown was not applied: delay=%s state=%+v", delay, state)
 	}
 }

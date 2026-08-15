@@ -236,11 +236,13 @@ class AgentTests(unittest.TestCase):
         peer["latest_handshake"] = now - agent.INITIATOR_ONLINE_MAX_AGE - 1
         self.assertFalse(agent.eligible_initiator_server(peer, now))
 
-    def test_repeated_probe_failures_enter_long_cooldown(self):
+    def test_repeated_probe_failures_use_bounded_recovery_backoff(self):
         self.assertEqual(agent.retry_delay(1), 3)
         self.assertEqual(agent.retry_delay(2), 10)
-        self.assertEqual(agent.retry_delay(3), 1800)
-        self.assertEqual(agent.retry_delay(20), 1800)
+        self.assertEqual(agent.retry_delay(3), 30)
+        self.assertEqual(agent.retry_delay(4), 60)
+        self.assertEqual(agent.retry_delay(5), 300)
+        self.assertEqual(agent.retry_delay(20), 300)
 
 
 if __name__ == "__main__":

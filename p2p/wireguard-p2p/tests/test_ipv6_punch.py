@@ -22,8 +22,8 @@ api = load_module("api_ipv6", ROOT / "vps" / "peers_api.py")
 
 class IPv6PunchTests(unittest.TestCase):
     def test_current_release_versions_match(self):
-        self.assertEqual(agent.VERSION, "7.12.1")
-        self.assertEqual(api.VERSION, "7.12.1")
+        self.assertEqual(agent.VERSION, "7.13.0")
+        self.assertEqual(api.VERSION, "7.13.0")
 
     def test_deprecated_ipv6_lifetime_is_rejected(self):
         self.assertTrue(candidates.ipv6_address_info_unusable({
@@ -85,11 +85,13 @@ class IPv6PunchTests(unittest.TestCase):
         self.assertEqual(agent.CONFIRMATION_REKEY_WINDOW, 8.0)
 
     def test_retry_schedule_is_fast_then_quiet(self):
-        self.assertEqual(agent.RETRY_DELAYS, (3, 10))
+        self.assertEqual(agent.RETRY_DELAYS, (3, 10, 30, 60))
         self.assertEqual(agent.retry_delay(1), 3)
         self.assertEqual(agent.retry_delay(2), 10)
-        self.assertEqual(agent.retry_delay(3), agent.FAILURE_COOLDOWN)
-        self.assertEqual(agent.FAILURE_COOLDOWN, 1800)
+        self.assertEqual(agent.retry_delay(3), 30)
+        self.assertEqual(agent.retry_delay(4), 60)
+        self.assertEqual(agent.retry_delay(5), agent.FAILURE_COOLDOWN)
+        self.assertEqual(agent.FAILURE_COOLDOWN, 300)
 
     def test_reflexive6_candidate_uses_wireguard_port(self):
         candidate = candidates.reflexive6_candidate(

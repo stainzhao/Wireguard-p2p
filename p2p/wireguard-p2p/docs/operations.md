@@ -1,6 +1,6 @@
 # Operations
 
-当前版本：**v7.12.1**。
+当前版本：**v7.13.0**。
 
 ## Roles
 
@@ -76,3 +76,14 @@ wg show wg0
 ```
 
 所有安装和更新都不得修改 WireGuard key、基础 VPS peer 或 `AllowedIPs=10.0.0.0/24` Relay baseline。
+
+
+## v7.13.0 recovery timing
+
+- Shared client: active Coordinator sync 10 s; stable Direct sync 20 s.
+- Shared client Direct retry: 15 s, 30 s, 60 s, then 5 min.
+- Linux Server initiator sync: 10 s.
+- Linux Server Direct retry: 3 s, 10 s, 30 s, 60 s, then 5 min.
+- Linux Server Direct monitor: 20 s.
+- Coordinator transport-error retry is capped at 30 s on the shared client.
+- These timers affect control/recovery only; established Direct traffic remains kernel WireGuard traffic and does not traverse the VPS.
