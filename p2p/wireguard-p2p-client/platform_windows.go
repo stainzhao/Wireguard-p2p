@@ -9,7 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 )
+
+const createNoWindow = 0x08000000
 
 func resolveWGExecutable() (string, error) {
 	if programFiles := os.Getenv("ProgramFiles"); programFiles != "" {
@@ -24,8 +27,16 @@ func resolveWGExecutable() (string, error) {
 	return "", errors.New("WireGuard wg.exe was not found; install WireGuard for Windows first")
 }
 
+func configurePlatformCommand(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: createNoWindow,
+	}
+}
+
 func legacyClientConflict() error {
 	cmd := exec.Command("schtasks.exe", "/Query", "/TN", "WireGuard P2P Sync")
+	configurePlatformCommand(cmd)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if cmd.Run() == nil {
