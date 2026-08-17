@@ -76,11 +76,18 @@ jobs:
       - name: Test shared client on Linux
         working-directory: p2p/wireguard-p2p-client
         run: go test ./...
+      - name: Install Windows resource compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends binutils-mingw-w64-x86-64 gcc-mingw-w64-x86-64
       - name: Build Windows amd64
         working-directory: p2p/wireguard-p2p-client
         run: |
           mkdir -p dist/windows-amd64
+          x86_64-w64-mingw32-windres app.rc -O coff -o rsrc_windows_amd64.syso
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-H=windowsgui" -o dist/windows-amd64/wireguard-p2p.exe .
+          x86_64-w64-mingw32-objdump -x dist/windows-amd64/wireguard-p2p.exe | grep -q '\.rsrc'
+          rm -f rsrc_windows_amd64.syso
       - name: Build Linux amd64 package
         working-directory: p2p/wireguard-p2p-client
         run: |
