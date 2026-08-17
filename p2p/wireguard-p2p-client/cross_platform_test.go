@@ -7,8 +7,8 @@ import (
 )
 
 func TestCrossPlatformClientRelease(t *testing.T) {
-	if version != "7.15.0" {
-		t.Fatalf("version = %q, want 7.15.0", version)
+	if version != "7.15.1" {
+		t.Fatalf("version = %q, want 7.15.1", version)
 	}
 }
 
@@ -32,7 +32,7 @@ func TestSharedMainHasNoWindowsBootstrap(t *testing.T) {
 }
 
 func TestWindowsGUIHumanizedRegressionGuards(t *testing.T) {
-	files := []string{"gui_windows.go", "gui_model_windows.go", "gui_paint_windows.go", "gui_tray_windows.go"}
+	files := []string{"gui_windows.go", "gui_model_windows.go", "gui_paint_windows.go", "gui_tray_windows.go", "gui_flicker_guard_windows.go"}
 	combined := ""
 	for _, path := range files {
 		body, err := os.ReadFile(path)
@@ -49,9 +49,13 @@ func TestWindowsGUIHumanizedRegressionGuards(t *testing.T) {
 		"attachParentConsoleForCLI",
 		"wmTray",
 		"正在安全退出",
+		"procKillTimer.Call(hwnd, 1)",
+		"procCreateCompatibleDC",
+		"procCreateCompatibleBitmap",
+		"procBitBlt.Call",
 	} {
 		if !strings.Contains(combined, required) {
-			t.Fatalf("Windows GUI is missing humanized behavior %q", required)
+			t.Fatalf("Windows GUI is missing humanized/flicker-safe behavior %q", required)
 		}
 	}
 	if strings.Contains(combined, "case wmClose:\n\t\twindowsGUI.requestStop()") {
