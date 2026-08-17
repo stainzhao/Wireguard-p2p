@@ -7,8 +7,8 @@ import (
 )
 
 func TestCrossPlatformClientRelease(t *testing.T) {
-	if version != "7.15.3" {
-		t.Fatalf("version = %q, want 7.15.3", version)
+	if version != "7.15.4" {
+		t.Fatalf("version = %q, want 7.15.4", version)
 	}
 }
 
@@ -81,12 +81,33 @@ func TestWindowsGUIHumanizedRegressionGuards(t *testing.T) {
 		t.Fatal("Windows child commands must run without visible console windows")
 	}
 
+	manifest, err := os.ReadFile("app.manifest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestText := string(manifest)
+	if !strings.Contains(manifestText, `level="requireAdministrator"`) || !strings.Contains(manifestText, `uiAccess="false"`) {
+		t.Fatal("Windows application manifest must require administrator privileges for WireGuard interface access")
+	}
+
+	resourceScript, err := os.ReadFile("app.rc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(resourceScript), `1 24 "app.manifest"`) {
+		t.Fatal("Windows resource script must embed app.manifest as RT_MANIFEST resource 1")
+	}
+
 	workflow, err := os.ReadFile("../../.github/workflows/ci.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(workflow), "-H=windowsgui") {
+	workflowText := string(workflow)
+	if !strings.Contains(workflowText, "-H=windowsgui") {
 		t.Fatal("Windows release must use the GUI subsystem to avoid startup console flash")
+	}
+	if !strings.Contains(workflowText, "requireAdministrator") {
+		t.Fatal("Windows CI must verify the embedded administrator manifest")
 	}
 }
 
