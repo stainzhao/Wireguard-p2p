@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -65,7 +64,7 @@ Remove-Item -Force $MyInvocation.MyCommand.Path
 	encodedPath := base64.StdEncoding.EncodeToString([]byte(scriptPath))
 	commandText := fmt.Sprintf("$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%s')); & $p", encodedPath)
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", commandText)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x00000008}
+	configurePlatformCommand(cmd)
 	if err := cmd.Start(); err != nil {
 		_ = os.Remove(next)
 		_ = os.Remove(scriptPath)

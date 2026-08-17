@@ -16,6 +16,7 @@ func resolveWGExecutable() (string, error) {
 	return candidate, nil
 }
 
-func legacyClientConflict() error { return nil }
-func platformPauseOnFatal()       {}
-func platformLabel() string       { return runtime.GOOS }
+func configurePlatformCommand(cmd *exec.Cmd) {}
+func legacyClientConflict() error            { return nil }
+func platformPauseOnFatal()                  {}
+func platformLabel() string                  { return runtime.GOOS }

@@ -29,8 +29,8 @@ const (
 	esReadOnly    = 0x0800
 	bsPushButton  = 0x00000000
 	swShow        = 5
+	swMinimize    = 6
 	emSetSel      = 0x00B1
-	emReplaceSel  = 0x00C2
 	idStop        = 1001
 	colorWindow   = 5
 	cwUseDefault  = ^uintptr(0x7fffffff)
@@ -75,7 +75,6 @@ var (
 	procSendMessageW     = user32.NewProc("SendMessageW")
 	procLoadCursorW      = user32.NewProc("LoadCursorW")
 	procGetModuleHandleW = kernel32GUI.NewProc("GetModuleHandleW")
-	procFreeConsole      = kernel32GUI.NewProc("FreeConsole")
 )
 
 type point struct {
@@ -119,9 +118,6 @@ func init() {
 		go consumeWindowsGUILogs(r)
 	}
 
-	// Detach from a parent console instead of hiding it. This keeps terminal
-	// windows intact when the EXE is launched from PowerShell or cmd.exe.
-	procFreeConsole.Call()
 	go runWindowsGUI()
 }
 
@@ -274,7 +270,9 @@ func windowsGUIWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 			return 0
 		}
 	case wmClose:
-		windowsGUI.requestStop()
+		// The title-bar close button is intentionally non-destructive. Keep the
+		// P2P client alive and minimize it; explicit shutdown uses the button.
+		procShowWindow.Call(hwnd, swMinimize)
 		return 0
 	case wmDestroy:
 		windowsGUI.exitOnce.Do(func() { close(windowsGUI.exit) })

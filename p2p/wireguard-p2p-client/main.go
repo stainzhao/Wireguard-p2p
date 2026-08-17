@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	version          = "7.14.0"
+	version          = "7.14.1"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
@@ -289,6 +289,7 @@ func (a *app) wg(args ...string) (string, error) {
 	a.wgMu.Lock()
 	defer a.wgMu.Unlock()
 	cmd := exec.Command(a.wgPath, args...)
+	configurePlatformCommand(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
