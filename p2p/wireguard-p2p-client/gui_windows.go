@@ -59,23 +59,23 @@ var windowsGUI = &guiState{
 }
 
 var (
-	user32                  = syscall.NewLazyDLL("user32.dll")
-	kernel32GUI             = syscall.NewLazyDLL("kernel32.dll")
-	procRegisterClassExW    = user32.NewProc("RegisterClassExW")
-	procCreateWindowExW     = user32.NewProc("CreateWindowExW")
-	procDefWindowProcW      = user32.NewProc("DefWindowProcW")
-	procShowWindow          = user32.NewProc("ShowWindow")
-	procUpdateWindow        = user32.NewProc("UpdateWindow")
-	procGetMessageW         = user32.NewProc("GetMessageW")
-	procTranslateMessage    = user32.NewProc("TranslateMessage")
-	procDispatchMessageW    = user32.NewProc("DispatchMessageW")
-	procPostQuitMessage     = user32.NewProc("PostQuitMessage")
-	procDestroyWindow       = user32.NewProc("DestroyWindow")
-	procSetWindowTextW      = user32.NewProc("SetWindowTextW")
-	procSendMessageW        = user32.NewProc("SendMessageW")
-	procLoadCursorW         = user32.NewProc("LoadCursorW")
-	procGetModuleHandleW    = kernel32GUI.NewProc("GetModuleHandleW")
-	procFreeConsole         = kernel32GUI.NewProc("FreeConsole")
+	user32               = syscall.NewLazyDLL("user32.dll")
+	kernel32GUI          = syscall.NewLazyDLL("kernel32.dll")
+	procRegisterClassExW = user32.NewProc("RegisterClassExW")
+	procCreateWindowExW  = user32.NewProc("CreateWindowExW")
+	procDefWindowProcW   = user32.NewProc("DefWindowProcW")
+	procShowWindow       = user32.NewProc("ShowWindow")
+	procUpdateWindow     = user32.NewProc("UpdateWindow")
+	procGetMessageW      = user32.NewProc("GetMessageW")
+	procTranslateMessage = user32.NewProc("TranslateMessage")
+	procDispatchMessageW = user32.NewProc("DispatchMessageW")
+	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
+	procDestroyWindow    = user32.NewProc("DestroyWindow")
+	procSetWindowTextW   = user32.NewProc("SetWindowTextW")
+	procSendMessageW     = user32.NewProc("SendMessageW")
+	procLoadCursorW      = user32.NewProc("LoadCursorW")
+	procGetModuleHandleW = kernel32GUI.NewProc("GetModuleHandleW")
+	procFreeConsole      = kernel32GUI.NewProc("FreeConsole")
 )
 
 type point struct {
@@ -93,18 +93,18 @@ type msg struct {
 }
 
 type wndClassEx struct {
-	cbSize        uint32
-	style         uint32
-	wndProc       uintptr
-	clsExtra      int32
-	wndExtra      int32
-	instance      uintptr
-	icon          uintptr
-	cursor        uintptr
-	background    uintptr
-	menuName      *uint16
-	className     *uint16
-	iconSmall     uintptr
+	cbSize     uint32
+	style      uint32
+	wndProc    uintptr
+	clsExtra   int32
+	wndExtra   int32
+	instance   uintptr
+	icon       uintptr
+	cursor     uintptr
+	background uintptr
+	menuName   *uint16
+	className  *uint16
+	iconSmall  uintptr
 }
 
 func init() {
