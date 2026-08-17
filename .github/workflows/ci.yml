@@ -87,6 +87,7 @@ jobs:
           x86_64-w64-mingw32-windres app.rc -O coff -o rsrc_windows_amd64.syso
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-H=windowsgui" -o dist/windows-amd64/wireguard-p2p.exe .
           x86_64-w64-mingw32-objdump -x dist/windows-amd64/wireguard-p2p.exe | grep -q '\.rsrc'
+          strings dist/windows-amd64/wireguard-p2p.exe | grep -q 'requireAdministrator'
           rm -f rsrc_windows_amd64.syso
       - name: Build Linux amd64 package
         working-directory: p2p/wireguard-p2p-client
