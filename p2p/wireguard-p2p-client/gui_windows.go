@@ -51,11 +51,11 @@ type guiState struct {
 	exitOnce    sync.Once
 }
 
-var windowsGUI = &guiState{
+var windowsGUI = &guiState{
 	status: "正在启动",
 	iface:  "接口：等待检测",
 	mode:   "连接：VPS 中继可用，正在检测直连",
-	eit:   make(chan struct{}),
+	exit:   make(chan struct{}),
 }
 
 var (
