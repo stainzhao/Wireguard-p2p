@@ -24,8 +24,8 @@ func TestPerformanceRecoveryBackoff(t *testing.T) {
 }
 
 func TestPerformanceControlIntervals(t *testing.T) {
-	if version != "7.15.4" {
-		t.Fatalf("version = %q, want 7.15.4", version)
+	if version != "7.15.5" {
+		t.Fatalf("version = %q, want 7.15.5", version)
 	}
 	if activeInterval > 10*time.Second {
 		t.Fatalf("active interval too slow for fast topology recovery: %s", activeInterval)
