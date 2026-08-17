@@ -79,7 +79,7 @@ jobs:
       - name: Install Windows resource compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends binutils-mingw-w64-x86-64
+          sudo apt-get install -y --no-install-recommends binutils-mingw-w64-x86-64 gcc-mingw-w64-x86-64
       - name: Build Windows amd64
         working-directory: p2p/wireguard-p2p-client
         run: |
