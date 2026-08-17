@@ -107,8 +107,8 @@ func (g *guiState) paintScene(hdc uintptr, view guiView, client rect) {
 		}
 	}
 
-	g.drawText(hdc, "运行日志", g.fontBody, rgb(15, 23, 42), 28, 452, 200, 28, 0)
-	g.drawCard(hdc, 24, 468, 772, 146)
+	g.drawText(hdc, "运行日志", g.fontBody, rgb(15, 23, 42), 28, logTitleY, 200, logTitleHeight, 0)
+	g.drawCard(hdc, 24, logCardY, 772, logCardHeight)
 	g.drawText(hdc, "关闭窗口后程序会继续在系统托盘运行", g.fontSmall, rgb(100, 116, 139), 28, 634, 420, 28, 0)
 }
 

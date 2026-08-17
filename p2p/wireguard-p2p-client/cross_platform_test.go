@@ -7,8 +7,8 @@ import (
 )
 
 func TestCrossPlatformClientRelease(t *testing.T) {
-	if version != "7.15.4" {
-		t.Fatalf("version = %q, want 7.15.4", version)
+	if version != "7.15.5" {
+		t.Fatalf("version = %q, want 7.15.5", version)
 	}
 }
 
@@ -35,7 +35,7 @@ func TestSharedMainHasNoWindowsBootstrap(t *testing.T) {
 }
 
 func TestWindowsGUIHumanizedRegressionGuards(t *testing.T) {
-	files := []string{"gui_windows.go", "gui_model_windows.go", "gui_paint_windows.go", "gui_tray_windows.go", "gui_events_windows.go"}
+	files := []string{"gui_windows.go", "gui_model_windows.go", "gui_paint_windows.go", "gui_tray_windows.go", "gui_events_windows.go", "gui_layout_windows.go"}
 	combined := ""
 	for _, path := range files {
 		body, err := os.ReadFile(path)
@@ -60,9 +60,13 @@ func TestWindowsGUIHumanizedRegressionGuards(t *testing.T) {
 		"procCreateCompatibleDC",
 		"procCreateCompatibleBitmap",
 		"procBitBlt.Call",
+		"procSetWindowPos.Call",
+		"logTitleY",
+		"logCardY",
+		"logEditY",
 	} {
 		if !strings.Contains(combined, required) {
-			t.Fatalf("Windows GUI is missing humanized/event-driven behavior %q", required)
+			t.Fatalf("Windows GUI is missing humanized/event-driven layout behavior %q", required)
 		}
 	}
 	if strings.Contains(combined, "time.NewTicker") {
@@ -70,6 +74,23 @@ func TestWindowsGUIHumanizedRegressionGuards(t *testing.T) {
 	}
 	if strings.Contains(combined, "case wmClose:\n\t\twindowsGUI.requestStop()") {
 		t.Fatal("title-bar close must not terminate the client")
+	}
+
+	layout, err := os.ReadFile("gui_layout_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	layoutText := string(layout)
+	for _, required := range []string{
+		"logTitleY      = 450",
+		"logTitleHeight = 28",
+		"logCardY       = 484",
+		"logEditY       = 490",
+		"logEditHeight  = 120",
+	} {
+		if !strings.Contains(layoutText, required) {
+			t.Fatalf("Windows log layout regression guard missing %q", required)
+		}
 	}
 
 	platform, err := os.ReadFile("platform_windows.go")
