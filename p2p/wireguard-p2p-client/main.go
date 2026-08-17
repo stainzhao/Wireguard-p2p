@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	version          = "7.15.1"
+	version          = "7.15.2"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
@@ -203,6 +203,7 @@ func main() {
 		} else {
 			a.reportSyncRecovered()
 		}
+		platformClientStateChanged(a)
 		next = a.loopInterval()
 	}
 }
