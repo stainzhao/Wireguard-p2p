@@ -7,8 +7,8 @@ import (
 )
 
 func TestCrossPlatformClientRelease(t *testing.T) {
-	if version != "7.15.1" {
-		t.Fatalf("version = %q, want 7.15.1", version)
+	if version != "7.15.2" {
+		t.Fatalf("version = %q, want 7.15.2", version)
 	}
 }
 
@@ -29,10 +29,13 @@ func TestSharedMainHasNoWindowsBootstrap(t *testing.T) {
 	if !strings.Contains(text, "platformClientStarted(a)") || !strings.Contains(text, "defer platformClientStopped()") {
 		t.Fatal("shared client lifecycle is not connected to platform UI lifecycle hooks")
 	}
+	if !strings.Contains(text, "platformClientStateChanged(a)") {
+		t.Fatal("backend synchronization must emit a platform state-change event")
+	}
 }
 
 func TestWindowsGUIHumanizedRegressionGuards(t *testing.T) {
-	files := []string{"gui_windows.go", "gui_model_windows.go", "gui_paint_windows.go", "gui_tray_windows.go", "gui_flicker_guard_windows.go"}
+	files := []string{"gui_windows.go", "gui_model_windows.go", "gui_paint_windows.go", "gui_tray_windows.go", "gui_events_windows.go"}
 	combined := ""
 	for _, path := range files {
 		body, err := os.ReadFile(path)
@@ -50,13 +53,20 @@ func TestWindowsGUIHumanizedRegressionGuards(t *testing.T) {
 		"wmTray",
 		"正在安全退出",
 		"procKillTimer.Call(hwnd, 1)",
+		"platformClientStateChanged",
+		"guiViewFingerprint",
+		"appendGUILogLine",
+		"emReplaceSel",
 		"procCreateCompatibleDC",
 		"procCreateCompatibleBitmap",
 		"procBitBlt.Call",
 	} {
 		if !strings.Contains(combined, required) {
-			t.Fatalf("Windows GUI is missing humanized/flicker-safe behavior %q", required)
+			t.Fatalf("Windows GUI is missing humanized/event-driven behavior %q", required)
 		}
+	}
+	if strings.Contains(combined, "time.NewTicker") {
+		t.Fatal("Windows GUI must not poll state with a ticker")
 	}
 	if strings.Contains(combined, "case wmClose:\n\t\twindowsGUI.requestStop()") {
 		t.Fatal("title-bar close must not terminate the client")
