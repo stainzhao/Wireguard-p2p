@@ -10,11 +10,11 @@ import (
 )
 
 const (
-	emGetLineCount = 0x00BA
-	emLineIndex    = 0x00BB
-	emReplaceSel   = 0x00C2
+	emGetLineCount  = 0x00BA
+	emLineIndex     = 0x00BB
+	emReplaceSel    = 0x00C2
 	wmGetTextLength = 0x000E
-	maxGUILogLines = 300
+	maxGUILogLines  = 300
 )
 
 type guiPeer struct {
