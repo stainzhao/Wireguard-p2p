@@ -6,6 +6,15 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unsafe"
+)
+
+const (
+	emGetLineCount = 0x00BA
+	emLineIndex    = 0x00BB
+	emReplaceSel   = 0x00C2
+	wmGetTextLength = 0x000E
+	maxGUILogLines = 300
 )
 
 type guiPeer struct {
@@ -28,9 +37,10 @@ type guiView struct {
 
 func (g *guiState) consume(line string) {
 	g.mu.Lock()
+	wasStopping := g.stopping
 	g.logs = append(g.logs, line)
-	if len(g.logs) > 300 {
-		g.logs = append([]string(nil), g.logs[len(g.logs)-300:]...)
+	if len(g.logs) > maxGUILogLines {
+		g.logs = append([]string(nil), g.logs[len(g.logs)-maxGUILogLines:]...)
 	}
 
 	switch {
@@ -53,11 +63,53 @@ func (g *guiState) consume(line string) {
 	case strings.Contains(line, "Stopped."):
 		g.health = "stopped"
 	}
-	hwnd := g.window
+	logEdit := g.logEdit
+	a := g.app
+	stoppingChanged := wasStopping != g.stopping
 	g.mu.Unlock()
-	if hwnd != 0 {
-		procPostMessageW.Call(hwnd, wmGUIRefresh, 0, 0)
+
+	// Logs are independent from the dashboard paint path. Append only the new
+	// line instead of replacing the entire EDIT control on every message.
+	if logEdit != 0 {
+		appendGUILogLine(logEdit, line)
 	}
+
+	// The log may correspond to a real backend state transition (for example a
+	// successful Direct promotion). The platform hook fingerprints the visible
+	// state and repaints only if that state actually changed.
+	platformClientStateChanged(a)
+
+	// Only the explicit shutdown transition needs the owner-drawn controls to
+	// change label/enabled state. This is rare and intentionally uses the full
+	// control refresh path once.
+	if stoppingChanged {
+		g.post(wmGUIRefresh)
+	}
+}
+
+func appendGUILogLine(hwnd uintptr, line string) {
+	length, _, _ := procSendMessageW.Call(hwnd, wmGetTextLength, 0, 0)
+	text := line
+	if length > 0 {
+		text = "\r\n" + line
+	}
+	procSendMessageW.Call(hwnd, emSetSel, ^uintptr(0), ^uintptr(0))
+	ptr := utf16Ptr(text)
+	procSendMessageW.Call(hwnd, emReplaceSel, 0, uintptr(unsafe.Pointer(ptr)))
+
+	// Keep the visible control bounded without rebuilding all log text. Delete
+	// only the oldest line once the rolling window exceeds maxGUILogLines.
+	lineCount, _, _ := procSendMessageW.Call(hwnd, emGetLineCount, 0, 0)
+	if lineCount > maxGUILogLines {
+		secondLine, _, _ := procSendMessageW.Call(hwnd, emLineIndex, 1, 0)
+		if secondLine > 0 && secondLine != ^uintptr(0) {
+			procSendMessageW.Call(hwnd, emSetSel, 0, secondLine)
+			empty := utf16Ptr("")
+			procSendMessageW.Call(hwnd, emReplaceSel, 0, uintptr(unsafe.Pointer(empty)))
+		}
+	}
+	procSendMessageW.Call(hwnd, emSetSel, ^uintptr(0), ^uintptr(0))
+	procSendMessageW.Call(hwnd, emScrollCaret, 0, 0)
 }
 
 func (g *guiState) buildView() guiView {
