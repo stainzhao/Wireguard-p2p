@@ -35,6 +35,10 @@ func legacyClientConflict() error {
 }
 
 func platformPauseOnFatal() {
+	if windowsGUIRequested() {
+		waitWindowsGUIOnFatal()
+		return
+	}
 	fmt.Println("Press Enter to close.")
 	_, _ = fmt.Scanln()
 }
