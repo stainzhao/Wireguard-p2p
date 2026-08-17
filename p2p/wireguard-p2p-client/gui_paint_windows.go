@@ -7,6 +7,15 @@ import (
 	"unsafe"
 )
 
+const srcCopy = 0x00CC0020
+
+var (
+	procCreateCompatibleDC     = gdi32.NewProc("CreateCompatibleDC")
+	procDeleteDC               = gdi32.NewProc("DeleteDC")
+	procCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
+	procBitBlt                 = gdi32.NewProc("BitBlt")
+)
+
 func (g *guiState) paint(hwnd uintptr) {
 	var ps paintStruct
 	hdc, _, _ := procBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
@@ -18,7 +27,35 @@ func (g *guiState) paint(hwnd uintptr) {
 	view := g.buildView()
 	var client rect
 	procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&client)))
+	width := int(client.right - client.left)
+	height := int(client.bottom - client.top)
+	if width <= 0 || height <= 0 {
+		return
+	}
 
+	// Draw the complete frame off-screen, then copy it to the window in one
+	// operation. Direct GDI painting exposes intermediate frames (background,
+	// cards, then text) and was the second source of visible flashing in v7.15.0.
+	memDC, _, _ := procCreateCompatibleDC.Call(hdc)
+	if memDC == 0 {
+		g.paintScene(hdc, view, client)
+		return
+	}
+	defer procDeleteDC.Call(memDC)
+
+	bitmap, _, _ := procCreateCompatibleBitmap.Call(hdc, uintptr(width), uintptr(height))
+	if bitmap == 0 {
+		g.paintScene(hdc, view, client)
+		return
+	}
+	oldBitmap, _, _ := procSelectObject.Call(memDC, bitmap)
+	g.paintScene(memDC, view, client)
+	procBitBlt.Call(hdc, 0, 0, uintptr(width), uintptr(height), memDC, 0, 0, srcCopy)
+	procSelectObject.Call(memDC, oldBitmap)
+	procDeleteObject.Call(bitmap)
+}
+
+func (g *guiState) paintScene(hdc uintptr, view guiView, client rect) {
 	bg := newBrush(rgb(248, 250, 252))
 	procFillRect.Call(hdc, uintptr(unsafe.Pointer(&client)), bg)
 	procDeleteObject.Call(bg)
