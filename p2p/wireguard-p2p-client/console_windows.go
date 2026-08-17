@@ -11,13 +11,21 @@ import (
 
 var instanceMutex uintptr
 var updateStopEvent uintptr
+var singleInstanceConflict bool
 
 func acquireSingleInstance() bool {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	createMutex := kernel32.NewProc("CreateMutexW")
+	closeHandle := kernel32.NewProc("CloseHandle")
 	name, _ := syscall.UTF16PtrFromString("Global\\WireGuardP2PExe")
 	handle, _, callErr := createMutex.Call(0, 0, uintptr(unsafe.Pointer(name)))
-	if handle == 0 || callErr == syscall.ERROR_ALREADY_EXISTS {
+	if handle == 0 {
+		return false
+	}
+	if callErr == syscall.ERROR_ALREADY_EXISTS {
+		singleInstanceConflict = true
+		closeHandle.Call(handle)
+		showExistingWindowsGUI()
 		return false
 	}
 	instanceMutex = handle

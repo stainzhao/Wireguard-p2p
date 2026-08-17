@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	version          = "7.14.1"
+	version          = "7.15.0"
 	apiBase          = "http://10.0.0.1:8899"
 	keepalive        = 25
 	onlineMaxAge     = 3 * time.Minute
@@ -153,6 +153,8 @@ func main() {
 
 	shutdown, cleanupDone := installConsoleCloseHandler()
 	defer close(cleanupDone)
+	platformClientStarted(a)
+	defer platformClientStopped()
 
 	fmt.Printf("WireGuard P2P %s client is running on %s. Press Ctrl+C to stop.\n", version, platformLabel())
 	fmt.Println("VPS relay remains available while direct candidates are tested in the background.")

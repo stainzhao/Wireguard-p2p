@@ -19,3 +19,5 @@ func configurePlatformCommand(cmd *exec.Cmd) {}
 func legacyClientConflict() error            { return nil }
 func platformPauseOnFatal()                  {}
 func platformLabel() string                  { return "Linux" }
+func platformClientStarted(a *app)           {}
+func platformClientStopped()                 {}

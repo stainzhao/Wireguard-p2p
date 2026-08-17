@@ -46,6 +46,9 @@ func legacyClientConflict() error {
 }
 
 func platformPauseOnFatal() {
+	if singleInstanceConflict {
+		return
+	}
 	if windowsGUIRequested() {
 		waitWindowsGUIOnFatal()
 		return

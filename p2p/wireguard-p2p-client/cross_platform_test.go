@@ -7,8 +7,8 @@ import (
 )
 
 func TestCrossPlatformClientRelease(t *testing.T) {
-	if version != "7.14.1" {
-		t.Fatalf("version = %q, want 7.14.1", version)
+	if version != "7.15.0" {
+		t.Fatalf("version = %q, want 7.15.0", version)
 	}
 }
 
@@ -26,16 +26,36 @@ func TestSharedMainHasNoWindowsBootstrap(t *testing.T) {
 	if !strings.Contains(text, "configurePlatformCommand(cmd)") {
 		t.Fatal("shared command execution is missing the platform window-suppression hook")
 	}
+	if !strings.Contains(text, "platformClientStarted(a)") || !strings.Contains(text, "defer platformClientStopped()") {
+		t.Fatal("shared client lifecycle is not connected to platform UI lifecycle hooks")
+	}
 }
 
-func TestWindowsGUIRegressionGuards(t *testing.T) {
-	gui, err := os.ReadFile("gui_windows.go")
-	if err != nil {
-		t.Fatal(err)
+func TestWindowsGUIHumanizedRegressionGuards(t *testing.T) {
+	files := []string{"gui_windows.go", "gui_model_windows.go", "gui_paint_windows.go", "gui_tray_windows.go"}
+	combined := ""
+	for _, path := range files {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		combined += string(body)
 	}
-	guiText := string(gui)
-	if !strings.Contains(guiText, "case wmClose:") || !strings.Contains(guiText, "procShowWindow.Call(hwnd, swMinimize)") {
-		t.Fatal("Windows title-bar close must minimize instead of stopping the client")
+	for _, required := range []string{
+		"snapshotGUIPeers",
+		"procPostMessageW",
+		"hideToTray(true)",
+		"showExistingWindowsGUI",
+		"attachParentConsoleForCLI",
+		"wmTray",
+		"正在安全退出",
+	} {
+		if !strings.Contains(combined, required) {
+			t.Fatalf("Windows GUI is missing humanized behavior %q", required)
+		}
+	}
+	if strings.Contains(combined, "case wmClose:\n\t\twindowsGUI.requestStop()") {
+		t.Fatal("title-bar close must not terminate the client")
 	}
 
 	platform, err := os.ReadFile("platform_windows.go")
