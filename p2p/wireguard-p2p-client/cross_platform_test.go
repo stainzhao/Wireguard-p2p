@@ -7,8 +7,8 @@ import (
 )
 
 func TestCrossPlatformClientRelease(t *testing.T) {
-	if version != "7.15.2" {
-		t.Fatalf("version = %q, want 7.15.2", version)
+	if version != "7.15.3" {
+		t.Fatalf("version = %q, want 7.15.3", version)
 	}
 }
 
