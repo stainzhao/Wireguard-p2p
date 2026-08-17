@@ -51,11 +51,11 @@ type guiState struct {
 	exitOnce    sync.Once
 }
 
-var windowsGUI = &guiState{
+var windowsGUI = &guiState{
 	status: "正在启动",
 	iface:  "接口：等待检测",
 	mode:   "连接：VPS 中继可用，正在检测直连",
-	exit:   make(chan struct{}),
+	eit:   make(chan struct{}),
 }
 
 var (
@@ -300,7 +300,7 @@ func (g *guiState) requestStop() {
 }
 
 func createControl(parent uintptr, class, text string, x, y, width, height int, extraStyle uintptr, id uintptr) uintptr {
-	style := uintptr(wsChild | wsVisible) | extraStyle
+	style := uintptr(wsChild|wsVisible) | extraStyle
 	hwnd, _, _ := procCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(utf16Ptr(class))),
