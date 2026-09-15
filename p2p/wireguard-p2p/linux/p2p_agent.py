@@ -42,7 +42,7 @@ def time_ns():
         return native()
     return int(time.time() * 1000000000)
 
-VERSION = "7.13.0"
+VERSION = "7.15.6"
 INSTANCE_ID = uuid.uuid4().hex
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
