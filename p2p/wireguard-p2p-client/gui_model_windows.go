@@ -42,6 +42,7 @@ func (g *guiState) consume(line string) {
 	if len(g.logs) > maxGUILogLines {
 		g.logs = append([]string(nil), g.logs[len(g.logs)-maxGUILogLines:]...)
 	}
+	g.pendingLogs = append(g.pendingLogs, line)
 
 	switch {
 	case strings.Contains(line, "Using WireGuard interface:"):
@@ -63,16 +64,14 @@ func (g *guiState) consume(line string) {
 	case strings.Contains(line, "Stopped."):
 		g.health = "stopped"
 	}
-	logEdit := g.logEdit
 	a := g.app
 	stoppingChanged := wasStopping != g.stopping
 	g.mu.Unlock()
 
-	// Logs are independent from the dashboard paint path. Append only the new
-	// line instead of replacing the entire EDIT control on every message.
-	if logEdit != 0 {
-		appendGUILogLine(logEdit, line)
-	}
+	// Marshal log rendering onto the GUI thread. appendGUILogLine used to run
+	// on this reader goroutine while refreshUI replaced the whole EDIT control
+	// from the GUI thread, which raced and produced overlapping log text.
+	g.post(wmGUILogAppend)
 
 	// The log may correspond to a real backend state transition (for example a
 	// successful Direct promotion). The platform hook fingerprints the visible
@@ -236,7 +235,7 @@ func friendlyCandidateType(value string) string {
 		return "IPv4 打洞"
 	case "predicted4":
 		return "IPv4 端口预测"
-	case "lan":
+	case "lan", "lan4":
 		return "局域网直连"
 	case "endpoint":
 		return "公网端点直连"

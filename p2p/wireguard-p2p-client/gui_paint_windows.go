@@ -73,9 +73,13 @@ func (g *guiState) paintScene(hdc uintptr, view guiView, client rect) {
 	}
 	g.drawText(hdc, "WireGuard · "+iface, g.fontSmall, rgb(100, 116, 139), 590, 86, 170, 24, 2)
 
-	g.drawText(hdc, "设备连接", g.fontBody, rgb(15, 23, 42), 28, 180, 200, 28, 0)
+	deviceTitle := "设备连接"
+	if len(view.Peers) > 0 {
+		deviceTitle = fmt.Sprintf("设备连接 · %d", len(view.Peers))
+	}
+	g.drawText(hdc, deviceTitle, g.fontBody, rgb(15, 23, 42), 28, 180, 300, 28, 0)
 	g.drawCard(hdc, 24, 212, 772, 230)
-	g.drawText(hdc, "设备", g.fontSmall, rgb(100, 116, 139), 44, 224, 180, 24, 0)
+	g.drawText(hdc, "设备", g.fontSmall, rgb(100, 116, 139), 60, 224, 180, 24, 0)
 	g.drawText(hdc, "连接方式", g.fontSmall, rgb(100, 116, 139), 250, 224, 180, 24, 0)
 	g.drawText(hdc, "路径 / 状态", g.fontSmall, rgb(100, 116, 139), 465, 224, 280, 24, 0)
 
@@ -89,16 +93,20 @@ func (g *guiState) paintScene(hdc uintptr, view guiView, client rect) {
 		for i := 0; i < limit; i++ {
 			peer := view.Peers[i]
 			y := 254 + i*27
+			if i%2 == 1 {
+				g.fillRect(hdc, 28, y-4, 764, 26, rgb(246, 248, 251))
+			}
 			if i > 0 {
 				g.drawSeparator(hdc, 44, y-3, 728)
 			}
-			g.drawText(hdc, peer.IP, g.fontBody, rgb(30, 41, 59), 44, y, 180, 24, 0)
 			modeColor := rgb(71, 85, 105)
 			if peer.Direct {
 				modeColor = rgb(22, 163, 74)
 			} else if peer.Busy {
 				modeColor = rgb(37, 99, 235)
 			}
+			g.drawDot(hdc, 42, y+8, 8, modeColor)
+			g.drawText(hdc, peer.IP, g.fontBody, rgb(30, 41, 59), 58, y, 180, 24, 0)
 			g.drawText(hdc, peer.Mode, g.fontBody, modeColor, 250, y, 190, 24, 0)
 			g.drawText(hdc, peer.Detail, g.fontBody, rgb(71, 85, 105), 465, y, 280, 24, 0)
 		}
@@ -142,6 +150,25 @@ func (g *guiState) drawStatusDot(hdc uintptr, x, y int, color uint32) {
 	oldBrush, _, _ := procSelectObject.Call(hdc, brush)
 	oldPen, _, _ := procSelectObject.Call(hdc, pen)
 	procEllipse.Call(hdc, uintptr(g.px(x)), uintptr(g.px(y)), uintptr(g.px(x+12)), uintptr(g.px(y+12)))
+	procSelectObject.Call(hdc, oldBrush)
+	procSelectObject.Call(hdc, oldPen)
+	procDeleteObject.Call(brush)
+	procDeleteObject.Call(pen)
+}
+
+func (g *guiState) fillRect(hdc uintptr, x, y, width, height int, color uint32) {
+	brush := newBrush(color)
+	r := rect{int32(g.px(x)), int32(g.px(y)), int32(g.px(x + width)), int32(g.px(y + height))}
+	procFillRect.Call(hdc, uintptr(unsafe.Pointer(&r)), brush)
+	procDeleteObject.Call(brush)
+}
+
+func (g *guiState) drawDot(hdc uintptr, x, y, size int, color uint32) {
+	brush := newBrush(color)
+	pen, _, _ := procCreatePen.Call(psSolid, 0, uintptr(color))
+	oldBrush, _, _ := procSelectObject.Call(hdc, brush)
+	oldPen, _, _ := procSelectObject.Call(hdc, pen)
+	procEllipse.Call(hdc, uintptr(g.px(x)), uintptr(g.px(y)), uintptr(g.px(x+size)), uintptr(g.px(y+size)))
 	procSelectObject.Call(hdc, oldBrush)
 	procSelectObject.Call(hdc, oldPen)
 	procDeleteObject.Call(brush)
