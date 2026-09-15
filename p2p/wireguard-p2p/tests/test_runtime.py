@@ -50,8 +50,8 @@ class RuntimeTests(unittest.TestCase):
         }
 
     def test_release_and_resource_constants(self):
-        self.assertEqual(agent.VERSION, "7.13.0")
-        self.assertEqual(api.VERSION, "7.13.0")
+        self.assertEqual(agent.VERSION, "7.15.6")
+        self.assertEqual(api.VERSION, "7.15.6")
         self.assertEqual(agent.DIRECT_MONITOR_INTERVAL, 20)
         self.assertEqual(agent.IDLE_MONITOR_INTERVAL, 60)
         self.assertEqual(agent.REFLEXIVE6_REFRESH_INTERVAL, 600)

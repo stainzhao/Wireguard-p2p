@@ -134,3 +134,18 @@ func TestPreferredHost6SortsBeforeBackup(t *testing.T) {
 		t.Fatalf("preferred host6 was not first: %+v", candidates)
 	}
 }
+
+func TestSamePrivateSubnet(t *testing.T) {
+	if !samePrivateSubnet("172.19.26.113", "172.19.26.207:51820") {
+		t.Fatal("same /24 private subnet should match")
+	}
+	if samePrivateSubnet("172.19.26.113", "192.168.0.10:51820") {
+		t.Fatal("different private subnet should not match")
+	}
+	if samePrivateSubnet("", "172.19.26.207:51820") {
+		t.Fatal("empty local address should not match")
+	}
+	if samePrivateSubnet("172.19.26.113", "8.8.8.8:51820") {
+		t.Fatal("public peer endpoint should not match")
+	}
+}

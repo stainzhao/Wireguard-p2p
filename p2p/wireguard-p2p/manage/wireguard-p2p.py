@@ -15,7 +15,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "7.13.0"
+VERSION = "7.15.6"
 API_BASE = "http://10.0.0.1:8899"
 GITHUB_REPO = os.environ.get("P2P_GITHUB_REPO", "stainzhao/p2p")
 CONFIG_DIR = Path(os.environ.get("P2P_CONFIG_DIR", "/etc/wireguard-p2p"))
@@ -440,7 +440,9 @@ def write_role_registry(registry_file, values):
     os.chmod(temporary, 0o640)
     try:
         shutil.chown(temporary, user="root", group="wireguard-p2p")
-    except LookupError:
+    except (LookupError, PermissionError):
+        # Non-root callers (for example the unit test suite) cannot chown to
+        # root; the registry is still written correctly for the current user.
         pass
     os.replace(temporary, registry_file)
 

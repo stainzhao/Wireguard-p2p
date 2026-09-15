@@ -30,14 +30,16 @@ const (
 	wmGUIShow        = wmApp + 2
 	wmGUIExit        = wmApp + 3
 	wmTray           = wmApp + 4
+	wmGUILogAppend   = wmApp + 5
 
-	wsOverlapped  = 0x00000000
-	wsCaption     = 0x00C00000
-	wsSysMenu     = 0x00080000
-	wsMinimizeBox = 0x00020000
-	wsVisible     = 0x10000000
-	wsChild       = 0x40000000
-	wsVScroll     = 0x00200000
+	wsOverlapped   = 0x00000000
+	wsCaption      = 0x00C00000
+	wsSysMenu      = 0x00080000
+	wsMinimizeBox  = 0x00020000
+	wsVisible      = 0x10000000
+	wsChild        = 0x40000000
+	wsVScroll      = 0x00200000
+	wsClipChildren = 0x02000000
 
 	esMultiline   = 0x0004
 	esAutoVScroll = 0x0040
@@ -93,6 +95,7 @@ type guiState struct {
 	iface           string
 	fatalMessage    string
 	logs            []string
+	pendingLogs     []string
 	fatal           bool
 	stopping        bool
 	startOnce       sync.Once
@@ -353,7 +356,7 @@ func runWindowsGUI() {
 	}
 	procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
 
-	style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox)
+	style := uintptr(wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox | wsClipChildren)
 	hwnd, _, _ := procCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(className)),
@@ -414,6 +417,9 @@ func windowsGUIWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 			windowsGUI.hideToTray(true)
 		}
 		return 0
+	case wmGUILogAppend:
+		windowsGUI.drainLogAppend()
+		return 0
 	case wmGUIRefresh, wmTimer:
 		windowsGUI.refreshUI()
 		return 0
@@ -462,10 +468,29 @@ func windowsGUIWndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uin
 	return result
 }
 
+// drainLogAppend renders queued log lines on the GUI thread only. The log
+// reader runs on a separate goroutine, so touching the EDIT control from two
+// threads previously interleaved partial appends with full replacements and
+// produced overlapping/garbled lines.
+func (g *guiState) drainLogAppend() {
+	g.mu.Lock()
+	lines := g.pendingLogs
+	g.pendingLogs = nil
+	logEdit := g.logEdit
+	g.mu.Unlock()
+	if logEdit == 0 {
+		return
+	}
+	for _, line := range lines {
+		appendGUILogLine(logEdit, line)
+	}
+}
+
 func (g *guiState) refreshUI() {
 	view := g.buildView()
 	g.mu.Lock()
 	logs := stringsJoinCRLF(g.logs)
+	g.pendingLogs = nil
 	logEdit := g.logEdit
 	hideButton := g.hideButton
 	stopButton := g.stopButton

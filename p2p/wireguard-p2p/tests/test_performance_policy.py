@@ -20,7 +20,7 @@ agent = load_module("p2p_agent_performance", LINUX / "p2p_agent.py")
 
 class PerformancePolicyTests(unittest.TestCase):
     def test_release_version(self):
-        self.assertEqual(agent.VERSION, "7.13.0")
+        self.assertEqual(agent.VERSION, "7.15.6")
 
     def test_server_direct_retry_curve(self):
         expected = {

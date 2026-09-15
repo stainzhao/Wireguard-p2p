@@ -209,13 +209,31 @@ func normalizeCandidate(candidate Candidate) (Candidate, bool) {
 	return candidate, true
 }
 
-func buildProbeCandidates(advertised []Candidate, publicEndpoint, lanEndpoint string, sameNAT, allowIPv6 bool) []Candidate {
+func samePrivateSubnet(ourLanIP, peerLanEndpoint string) bool {
+	ours := net.ParseIP(ourLanIP)
+	if ours == nil || ours.To4() == nil || !ours.IsPrivate() {
+		return false
+	}
+	host, _, err := net.SplitHostPort(peerLanEndpoint)
+	if err != nil {
+		return false
+	}
+	peer := net.ParseIP(strings.Trim(host, "[]"))
+	if peer == nil || peer.To4() == nil || !peer.IsPrivate() {
+		return false
+	}
+	ours4 := ours.To4()
+	peer4 := peer.To4()
+	return ours4[0] == peer4[0] && ours4[1] == peer4[1] && ours4[2] == peer4[2]
+}
+
+func buildProbeCandidates(advertised []Candidate, publicEndpoint, lanEndpoint string, allowLAN, allowIPv6 bool) []Candidate {
 	all := make([]Candidate, 0, len(advertised)+2)
 	for _, candidate := range advertised {
 		if (candidate.Type == "host6" || candidate.Type == "observed6" || candidate.Type == "reflexive6") && !allowIPv6 {
 			continue
 		}
-		if candidate.Type == "lan4" && !sameNAT {
+		if candidate.Type == "lan4" && !allowLAN {
 			continue
 		}
 		if normalized, ok := normalizeCandidate(candidate); ok {
@@ -223,7 +241,7 @@ func buildProbeCandidates(advertised []Candidate, publicEndpoint, lanEndpoint st
 		}
 	}
 
-	if sameNAT && lanEndpoint != "" {
+	if allowLAN && lanEndpoint != "" {
 		if candidate, ok := normalizeCandidate(Candidate{
 			Type: "lan4", Endpoint: lanEndpoint, Priority: candidatePriorityLAN4,
 		}); ok {

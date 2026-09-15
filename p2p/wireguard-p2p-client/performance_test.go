@@ -24,7 +24,7 @@ func TestPerformanceRecoveryBackoff(t *testing.T) {
 }
 
 func TestPerformanceControlIntervals(t *testing.T) {
-	if version != "7.15.5" {
+	if version != "7.15.6" {
 		t.Fatalf("version = %q, want 7.15.5", version)
 	}
 	if activeInterval > 10*time.Second {

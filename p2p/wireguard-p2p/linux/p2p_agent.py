@@ -30,6 +30,7 @@ from candidates import (
     global_ipv6_addresses,
     observed_type_for_endpoint,
     reflexive6_candidate,
+    same_private_subnet,
     select_probe_candidates,
     usable_global_ipv6,
 )
@@ -41,7 +42,7 @@ def time_ns():
         return native()
     return int(time.time() * 1000000000)
 
-VERSION = "7.13.0"
+VERSION = "7.15.6"
 INSTANCE_ID = uuid.uuid4().hex
 INTERFACE = os.environ.get("P2P_INTERFACE", "wg0")
 LISTEN_ADDRESS = os.environ["P2P_LISTEN_ADDRESS"]
@@ -85,6 +86,8 @@ VERBOSE_LOG = os.environ.get("P2P_VERBOSE_LOG", "0") == "1"
 STATES = {}
 SEEN_NONCES = {}
 STATE_LOCK = threading.Lock()
+GENERATION_LOCK = threading.Lock()
+LAST_GENERATION = 0
 NONCE_LOCK = threading.Lock()
 WG_LOCK = threading.Lock()
 REFLEXIVE6_LOCK = threading.Lock()
@@ -160,6 +163,14 @@ def local_wg_peers():
     return peers
 
 
+def next_generation(previous=0):
+    """Allocate a process-wide worker ID, even after a peer state is deleted."""
+    global LAST_GENERATION
+    with GENERATION_LOCK:
+        LAST_GENERATION = max(LAST_GENERATION, int(previous)) + 1
+        return LAST_GENERATION
+
+
 def load_state():
     try:
         with open(STATE_FILE) as handle:
@@ -170,7 +181,7 @@ def load_state():
             }
             for item in result.values():
                 item["worker_running"] = False
-                item["generation"] = int(item.get("generation", 0)) + 1
+                item["generation"] = next_generation(item.get("generation", 0))
                 if item.get("mode") == "probe":
                     item["mode"] = "idle"
                 item["started"] = 0
@@ -513,7 +524,7 @@ def cleanup_initiator_states(active_keys):
         for key, state in list(STATES.items()):
             if state.get("controller") != "initiator" or key in active_keys:
                 continue
-            state["generation"] = int(state.get("generation", 0)) + 1
+            state["generation"] = next_generation(state.get("generation", 0))
             state["worker_running"] = False
             if key in current:
                 try:
@@ -545,6 +556,7 @@ def server_initiator_once():
         return
 
     our_wan = endpoint_address(ours.get("endpoint", ""))
+    our_lan_ip = local_ipv4()
     now = time.time()
     active_keys = set()
     for peer in peers:
@@ -555,7 +567,10 @@ def server_initiator_once():
         peer_wan = endpoint_address(peer.get("endpoint", ""))
         same_nat = bool(our_wan and peer_wan and our_wan == peer_wan)
         lan_endpoint = peer.get("lan_endpoint", "")
-        endpoint_type = "LAN" if same_nat and lan_endpoint else "WAN"
+        lan_ok = bool(lan_endpoint) and (
+            same_nat or same_private_subnet(our_lan_ip, lan_endpoint)
+        )
+        endpoint_type = "LAN" if lan_ok else "WAN"
         endpoint = lan_endpoint if endpoint_type == "LAN" else peer.get("endpoint", "")
         try:
             handle_offer({
@@ -660,7 +675,49 @@ def trigger_overlay_packet(peer_ip):
         sock.close()
 
 
+def run_peer_worker(worker, mode, key, generation, *args):
+    """Release abandoned work without touching a replacement or next phase."""
+    try:
+        worker(key, generation, *args)
+    except Exception as exc:
+        log_error("{} worker failed: {}".format(mode, exc))
+    finally:
+        with STATE_LOCK:
+            state = STATES.get(key)
+            if (
+                state
+                and state.get("generation") == generation
+                and state.get("mode") == mode
+                and state.get("worker_running")
+            ):
+                try:
+                    wg_set("peer", key, "remove")
+                except Exception as exc:
+                    log_error("worker cleanup failed: {}".format(exc))
+                failures = int(state.get("failures", 0)) + 1
+                state.update({
+                    "generation": next_generation(generation),
+                    "worker_running": False,
+                    "mode": "idle",
+                    "endpoint": "",
+                    "endpoint_type": "",
+                    "selected_type": "",
+                    "started": 0,
+                    "baseline_handshake": 0,
+                    "failures": failures,
+                    "retry_after": time.time() + retry_delay(failures),
+                })
+                try:
+                    save_state()
+                except Exception as exc:
+                    log_error("worker recovery state save failed: {}".format(exc))
+
+
 def confirmation_rekey_worker(key, generation, peer_ip, endpoint):
+    run_peer_worker(_confirmation_rekey_worker, "confirm6", key, generation, peer_ip, endpoint)
+
+
+def _confirmation_rekey_worker(key, generation, peer_ip, endpoint):
     if STOP.wait(CONFIRMATION_REKEY_DELAY):
         return
 
@@ -814,6 +871,10 @@ def probe_generation_current(key, generation):
 
 
 def probe_worker(key, generation):
+    run_peer_worker(_probe_worker, "probe", key, generation)
+
+
+def _probe_worker(key, generation):
     with STATE_LOCK:
         state = STATES.get(key)
         if (
@@ -998,7 +1059,7 @@ def new_peer_state(peer_ip, session_id, session_started_ns, controller="responde
         "baseline_handshake": 0,
         "failures": 0,
         "retry_after": 0,
-        "generation": 1,
+        "generation": next_generation(),
         "worker_running": False,
         "control_expired": False,
     }
@@ -1021,6 +1082,14 @@ def handle_offer(data, controller="responder"):
         validate_endpoint(data["endpoint"]) if data.get("endpoint") else ""
     )
     endpoint_type = data.get("endpoint_type", "WAN")
+    if str(endpoint_type).lower() not in ("lan", "lan4"):
+        peer_lan_endpoint = ""
+        for item in (data.get("candidates", []) or []):
+            if isinstance(item, dict) and item.get("type") == "lan4":
+                peer_lan_endpoint = item.get("endpoint", "")
+                break
+        if same_private_subnet(local_ipv4(), peer_lan_endpoint):
+            endpoint_type = "LAN"
     candidates = select_probe_candidates(
         advertised, legacy_endpoint, endpoint_type
     )
@@ -1036,6 +1105,20 @@ def handle_offer(data, controller="responder"):
         current = local_wg_peers()
         local = current.get(key)
         state = STATES.get(key)
+        # Reject delayed sessions before an instance change can replace state.
+        if state is not None:
+            current_started = int(state.get("session_started_ns", 0) or 0)
+            if state.get("session_id") != session_id:
+                if current_started and session_started_ns <= current_started:
+                    return {
+                        "ok": True,
+                        "version": VERSION,
+                        "protocol": 7,
+                        "ignored": True,
+                        "reason": "stale_session",
+                    }
+            elif current_started and current_started != session_started_ns:
+                raise ValueError("session start changed for active session")
         instance_changed = bool(
             state is not None
             and peer_instance_id
@@ -1043,7 +1126,7 @@ def handle_offer(data, controller="responder"):
         )
 
         if instance_changed:
-            state["generation"] = int(state.get("generation", 0)) + 1
+            state["generation"] = next_generation(state.get("generation", 0))
             state["worker_running"] = False
             if local:
                 wg_set("peer", key, "remove")
@@ -1054,17 +1137,8 @@ def handle_offer(data, controller="responder"):
             STATES[key] = state
             log("peer instance changed {}; retrying P2P now".format(peer_ip))
         elif state is not None and state.get("session_id") != session_id:
-            current_started = int(state.get("session_started_ns", 0) or 0)
-            if current_started and session_started_ns <= current_started:
-                return {
-                    "ok": True,
-                    "version": VERSION,
-                    "protocol": 7,
-                    "ignored": True,
-                    "reason": "stale_session",
-                }
             preserve_direct = direct_peer_healthy(local, peer_ip, now)
-            state["generation"] = int(state.get("generation", 0)) + 1
+            state["generation"] = next_generation(state.get("generation", 0))
             state["worker_running"] = False
             if not preserve_direct:
                 if local:
@@ -1080,11 +1154,6 @@ def handle_offer(data, controller="responder"):
         elif state is None:
             state = new_peer_state(peer_ip, session_id, session_started_ns, controller, peer_instance_id)
             STATES[key] = state
-        else:
-            current_started = int(state.get("session_started_ns", 0) or 0)
-            if current_started and current_started != session_started_ns:
-                raise ValueError("session start changed for active session")
-            state["session_started_ns"] = session_started_ns
 
         state["session_id"] = session_id
         state["session_started_ns"] = session_started_ns
@@ -1102,7 +1171,7 @@ def handle_offer(data, controller="responder"):
 
         if signature_changed:
             state["candidate_signature"] = candidate_sig
-            state["generation"] = int(state.get("generation", 0)) + 1
+            state["generation"] = next_generation(state.get("generation", 0))
             state["failures"] = 0
             state["retry_after"] = 0
             state["worker_running"] = False
@@ -1155,7 +1224,7 @@ def handle_offer(data, controller="responder"):
                 save_state()
             else:
                 wg_set("peer", key, "remove")
-                state["generation"] = int(state.get("generation", 0)) + 1
+                state["generation"] = next_generation(state.get("generation", 0))
                 state.update({
                     "mode": "idle",
                     "endpoint": "",
@@ -1170,6 +1239,7 @@ def handle_offer(data, controller="responder"):
             and now >= float(state.get("retry_after", 0))
             and not state.get("worker_running")
         ):
+            state["generation"] = next_generation(state.get("generation", 0))
             state["worker_running"] = True
             state["mode"] = "probe"
             generation = int(state.get("generation", 0))
@@ -1247,7 +1317,7 @@ def handle_remove(data):
 
         if key in current:
             wg_set("peer", key, "remove")
-        state["generation"] = int(state.get("generation", 0)) + 1
+        state["generation"] = next_generation(state.get("generation", 0))
         state["worker_running"] = False
         del STATES[key]
         save_state()
@@ -1292,7 +1362,7 @@ def monitor_once():
                 else:
                     if local:
                         wg_set("peer", key, "remove")
-                    state["generation"] = int(state.get("generation", 0)) + 1
+                    state["generation"] = next_generation(state.get("generation", 0))
                     state["worker_running"] = False
                     del STATES[key]
                     log("lease expired {}; peer removed".format(peer_ip))
@@ -1312,7 +1382,7 @@ def monitor_once():
                     state["endpoint"] = local.get("endpoint", "")
                     continue
                 wg_set("peer", key, "remove")
-                state["generation"] = int(state.get("generation", 0)) + 1
+                state["generation"] = next_generation(state.get("generation", 0))
                 if state.get("control_expired"):
                     state["worker_running"] = False
                     del STATES[key]
@@ -1350,6 +1420,7 @@ def monitor_once():
             ):
                 candidates = state.get("candidates", [])
                 if candidates:
+                    state["generation"] = next_generation(state.get("generation", 0))
                     state["worker_running"] = True
                     state["mode"] = "probe"
                     launches.append(
