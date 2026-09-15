@@ -30,6 +30,7 @@ from candidates import (
     global_ipv6_addresses,
     observed_type_for_endpoint,
     reflexive6_candidate,
+    same_private_subnet,
     select_probe_candidates,
     usable_global_ipv6,
 )
@@ -555,6 +556,7 @@ def server_initiator_once():
         return
 
     our_wan = endpoint_address(ours.get("endpoint", ""))
+    our_lan_ip = local_ipv4()
     now = time.time()
     active_keys = set()
     for peer in peers:
@@ -565,7 +567,10 @@ def server_initiator_once():
         peer_wan = endpoint_address(peer.get("endpoint", ""))
         same_nat = bool(our_wan and peer_wan and our_wan == peer_wan)
         lan_endpoint = peer.get("lan_endpoint", "")
-        endpoint_type = "LAN" if same_nat and lan_endpoint else "WAN"
+        lan_ok = bool(lan_endpoint) and (
+            same_nat or same_private_subnet(our_lan_ip, lan_endpoint)
+        )
+        endpoint_type = "LAN" if lan_ok else "WAN"
         endpoint = lan_endpoint if endpoint_type == "LAN" else peer.get("endpoint", "")
         try:
             handle_offer({
@@ -1077,6 +1082,14 @@ def handle_offer(data, controller="responder"):
         validate_endpoint(data["endpoint"]) if data.get("endpoint") else ""
     )
     endpoint_type = data.get("endpoint_type", "WAN")
+    if str(endpoint_type).lower() not in ("lan", "lan4"):
+        peer_lan_endpoint = ""
+        for item in (data.get("candidates", []) or []):
+            if isinstance(item, dict) and item.get("type") == "lan4":
+                peer_lan_endpoint = item.get("endpoint", "")
+                break
+        if same_private_subnet(local_ipv4(), peer_lan_endpoint):
+            endpoint_type = "LAN"
     candidates = select_probe_candidates(
         advertised, legacy_endpoint, endpoint_type
     )

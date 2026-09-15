@@ -74,6 +74,30 @@ def parse_endpoint(value):
     return format_endpoint(ip, port), ip, port
 
 
+def same_private_subnet(our_lan_ip, peer_lan_endpoint, prefix_len=24):
+    """True if peer endpoint is a private IPv4 in the same subnet as our_lan_ip.
+
+    Allows LAN candidates even when the observed public WAN IPs differ
+    (for example campus multi-uplink NAT).
+    """
+    try:
+        ours = ipaddress.ip_address(our_lan_ip)
+    except (TypeError, ValueError):
+        return False
+    if ours.version != 4 or not ours.is_private:
+        return False
+    try:
+        _endpoint, peer, _port = parse_endpoint(peer_lan_endpoint)
+    except (TypeError, ValueError):
+        return False
+    if peer is None or peer.version != 4 or not peer.is_private:
+        return False
+    network = ipaddress.ip_network(
+        "{}/{}".format(ours, prefix_len), strict=False
+    )
+    return peer in network
+
+
 def usable_global_ipv6(address):
     ip = ipaddress.ip_address(address)
     return (
